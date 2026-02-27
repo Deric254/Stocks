@@ -20,3 +20,9 @@ app.include_router(analytics.router, prefix="/analytics", tags=["Analytics"])
 @app.get("/")
 async def root():
     return {"message": "DericBI Stock Vantage API is running"}
+
+from app.models.db_models import init_db
+from app.services.scheduler import start_scheduler
+
+init_db()
+start_scheduler()
