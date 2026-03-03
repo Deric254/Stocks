@@ -1,7 +1,15 @@
-# DericBI Stock Intelligence
+# Stock Intel
 
-> **Know more. Decide better.**  
+> **Cut through the noise.**  
 > Kenyan NSE stock screener, portfolio tracker & Ndindi-style scoring engine.
+
+---
+
+## Logo
+
+Place your `logo.png` file in `frontend/public/logo.png`.  
+It will automatically appear in the app header and browser tab.  
+If the file is missing the app falls back to a 📈 icon — nothing breaks.
 
 ---
 
@@ -46,7 +54,7 @@ See **INTEGRATION_GUIDE.md** for full step-by-step instructions covering:
 ## Folder Structure
 
 ```
-dericbi-stock-intelligence/
+stock-intel/
 │
 ├── INTEGRATION_GUIDE.md        ← Full deployment guide
 ├── README.md                   ← This file

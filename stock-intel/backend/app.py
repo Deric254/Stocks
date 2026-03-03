@@ -9,7 +9,7 @@ from services.scoring import ScoringEngine
 from services.portfolio import PortfolioManager
 from services.analytics import AnalyticsEngine
 
-app = FastAPI(title="DericBI Stock Intelligence API", version="1.0.0")
+app = FastAPI(title="Stock Intel API", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -49,7 +49,7 @@ class TradeRequest(BaseModel):
 
 @app.get("/")
 def root():
-    return {"message": "DericBI Stock Intelligence API", "status": "running"}
+    return {"message": "Stock Intel API", "status": "running"}
 
 
 @app.get("/api/stocks")

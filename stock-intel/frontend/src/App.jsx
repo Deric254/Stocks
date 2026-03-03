@@ -795,10 +795,14 @@ export default function App() {
 
       {/* Header */}
       <div style={{ position: "sticky", top: 0, zIndex: 100, background: "#060F1CDD", backdropFilter: "blur(12px)", borderBottom: "1px solid #0E1F33", padding: "12px 18px", display: "flex", alignItems: "center", gap: 12 }}>
-        <div style={{ width: 32, height: 32, background: "linear-gradient(135deg, #1F6FEB, #0A3A80)", borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16 }}>📈</div>
+        <img src="/logo.png" alt="Stock Intel"
+          style={{ width: 36, height: 36, borderRadius: 8, objectFit: "contain", background: "#0D2140", padding: 2 }}
+          onError={e => { e.target.style.display = "none"; e.target.nextSibling.style.display = "flex"; }}
+        />
+        <div style={{ width: 36, height: 36, background: "linear-gradient(135deg, #1F6FEB, #0A3A80)", borderRadius: 8, alignItems: "center", justifyContent: "center", fontSize: 18, display: "none" }}>📈</div>
         <div>
-          <div style={{ fontSize: 13, fontWeight: 700, color: "#E8F0FF", letterSpacing: "0.02em", fontFamily: "'Space Grotesk', sans-serif" }}>DericBI Stock Intelligence</div>
-          <div style={{ fontSize: 9, color: "#1F6FEB", letterSpacing: "0.12em", textTransform: "uppercase" }}>Know more. Decide better.</div>
+          <div style={{ fontSize: 13, fontWeight: 700, color: "#E8F0FF", letterSpacing: "0.02em", fontFamily: "'Space Grotesk', sans-serif" }}>Stock Intel</div>
+          <div style={{ fontSize: 9, color: "#1F6FEB", letterSpacing: "0.12em", textTransform: "uppercase" }}>Cut through the noise.</div>
         </div>
       </div>
 

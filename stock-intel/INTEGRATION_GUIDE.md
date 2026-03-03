@@ -1,4 +1,4 @@
-# DericBI Stock Intelligence — Full System Setup Guide
+# Stock Intel — Full System Setup Guide
 
 > **Stack:** Python FastAPI (Hugging Face Spaces) + React/Vite (Vercel)  
 > **Time to deploy:** ~45 minutes end-to-end
@@ -22,7 +22,7 @@
 ## 1. Repo Structure
 
 ```
-dericbi-stock-intelligence/
+stock-intel/
 ├── backend/                  ← Hugging Face Space
 │   ├── app.py
 │   ├── requirements.txt
@@ -74,8 +74,8 @@ Install these on your local machine before starting:
 
 ```bash
 # On your local machine
-git init dericbi-stock-intelligence
-cd dericbi-stock-intelligence
+git init stock-intel
+cd stock-intel
 
 # Copy the backend/ folder you downloaded into this repo
 # Then commit everything
@@ -83,7 +83,7 @@ git add .
 git commit -m "Initial backend commit"
 
 # Push to GitHub (create the repo on GitHub first, then)
-git remote add origin https://github.com/YOUR_USERNAME/dericbi-stock-intelligence.git
+git remote add origin https://github.com/YOUR_USERNAME/stock-intel.git
 git push -u origin main
 ```
 
@@ -139,7 +139,7 @@ https://YOUR_USERNAME-dericbi-backend.hf.space/
 
 You should see:
 ```json
-{"message": "DericBI Stock Intelligence API", "status": "running"}
+{"message": "Stock Intel API", "status": "running"}
 ```
 
 Test an endpoint:
@@ -378,9 +378,9 @@ GitHub Repo
 
 **Your live URLs will be:**
 - Backend: `https://YOUR_USERNAME-dericbi-backend.hf.space`
-- Frontend: `https://dericbi-stock-intelligence.vercel.app` (or custom domain)
+- Frontend: `https://stock-intel.vercel.app` (or custom domain)
 
 ---
 
-*DericBI Stock Intelligence — Know more. Decide better.*  
+*Stock Intel — Cut through the noise.*  
 *More BI services: https://dericbi.vercel.app*
