@@ -1,194 +1,153 @@
 @echo off
-title Stock Intel Launcher
+title Stock Intel - Debug Launcher
 color 0A
 cls
 
-echo.
-echo  =====================================================
-echo    Stock Intel - Cut through the noise.
-echo    Starting up - please wait...
-echo  =====================================================
+echo =====================================================
+echo  Stock Intel - DEBUG MODE
+echo  This window will STAY OPEN so you can see errors
+echo =====================================================
 echo.
 
-:: Get the folder this bat file lives in
+:: Set paths
 set "ROOT=%~dp0"
 set "BACKEND=%ROOT%backend"
 set "FRONTEND=%ROOT%frontend"
 
-echo  Root folder : %ROOT%
-echo  Backend     : %BACKEND%
-echo  Frontend    : %FRONTEND%
+echo ROOT     = %ROOT%
+echo BACKEND  = %BACKEND%
+echo FRONTEND = %FRONTEND%
 echo.
-
-:: CHECK PYTHON
-echo  [CHECK] Looking for Python...
+echo -----------------------------------------------------
+echo STEP 1 - Checking Python
+echo -----------------------------------------------------
 python --version
 if %errorlevel% neq 0 (
     echo.
-    echo  [ERROR] Python is NOT installed or not in PATH.
-    echo  Please install from: https://python.org/downloads
-    echo  IMPORTANT: Tick "Add Python to PATH" during install
+    echo ERROR: Python not found
+    echo Install from https://python.org
     echo.
-    pause
-    exit /b 1
+    goto :end
 )
-echo  [OK] Python found.
-echo.
 
-:: CHECK PIP via python -m pip (works even when pip.exe is not in PATH)
-echo  [CHECK] Checking pip via python -m pip...
+echo.
+echo -----------------------------------------------------
+echo STEP 2 - Checking pip
+echo -----------------------------------------------------
 python -m pip --version
 if %errorlevel% neq 0 (
     echo.
-    echo  [ERROR] pip is not available inside your Python install.
-    echo  Fix it by running this once:  python -m ensurepip --upgrade
+    echo ERROR: pip not found inside Python
+    echo Run this to fix: python -m ensurepip --upgrade
     echo.
-    pause
-    exit /b 1
+    goto :end
 )
-echo  [OK] pip found.
-echo.
 
-:: CHECK NODE
-echo  [CHECK] Looking for Node.js...
+echo.
+echo -----------------------------------------------------
+echo STEP 3 - Checking Node
+echo -----------------------------------------------------
 node --version
 if %errorlevel% neq 0 (
     echo.
-    echo  [ERROR] Node.js is NOT installed or not in PATH.
-    echo  Please install from: https://nodejs.org  (choose LTS version)
-    echo  Then restart your computer and try again.
+    echo ERROR: Node.js not found
+    echo Install from https://nodejs.org then close and reopen this window
     echo.
-    pause
-    exit /b 1
+    goto :end
 )
-echo  [OK] Node found.
-echo.
 
-:: CHECK NPM
-echo  [CHECK] Looking for npm...
+echo.
+echo -----------------------------------------------------
+echo STEP 4 - Checking npm
+echo -----------------------------------------------------
 npm --version
 if %errorlevel% neq 0 (
-    echo  [ERROR] npm not found. Reinstall Node.js from https://nodejs.org
-    pause
-    exit /b 1
+    echo.
+    echo ERROR: npm not found
+    echo Reinstall Node.js from https://nodejs.org
+    echo.
+    goto :end
 )
-echo  [OK] npm found.
-echo.
 
-:: INSTALL PYTHON PACKAGES
-echo  [STEP 1/4] Installing Python packages...
-echo  (This may take a minute on first run)
 echo.
+echo -----------------------------------------------------
+echo STEP 5 - Installing Python packages
+echo -----------------------------------------------------
 python -m pip install -r "%BACKEND%\requirements.txt"
 if %errorlevel% neq 0 (
     echo.
-    echo  [ERROR] Failed to install Python packages.
-    echo  Try running manually:
-    echo    cd "%BACKEND%"
-    echo    python -m pip install -r requirements.txt
+    echo ERROR: Python packages failed to install
+    echo See error above
     echo.
-    pause
-    exit /b 1
+    goto :end
 )
-echo.
-echo  [OK] Python packages installed.
-echo.
 
-:: INSTALL NODE PACKAGES
-echo  [STEP 2/4] Installing Node packages...
-echo  (This may take a minute on first run)
 echo.
+echo -----------------------------------------------------
+echo STEP 6 - Installing Node packages
+echo -----------------------------------------------------
 cd /d "%FRONTEND%"
 npm install
 if %errorlevel% neq 0 (
     echo.
-    echo  [ERROR] Failed to install Node packages.
-    echo  Try running manually:
-    echo    cd "%FRONTEND%"
-    echo    npm install
+    echo ERROR: npm install failed
+    echo See error above
     echo.
-    pause
-    exit /b 1
+    goto :end
 )
-echo.
-echo  [OK] Node packages installed.
-echo.
 
-:: CREATE .env.local
+echo.
+echo -----------------------------------------------------
+echo STEP 7 - Creating .env.local
+echo -----------------------------------------------------
 if not exist "%FRONTEND%\.env.local" (
-    echo  [STEP 3/4] Creating .env.local...
     echo VITE_API_BASE=http://localhost:8000> "%FRONTEND%\.env.local"
-    echo  [OK] .env.local created.
+    echo Created .env.local
 ) else (
-    echo  [STEP 3/4] .env.local already exists. Skipping.
+    echo .env.local already exists - skipping
 )
-echo.
 
-:: START BACKEND
-echo  [STEP 4/4] Starting backend server...
+echo.
+echo -----------------------------------------------------
+echo STEP 8 - Starting Backend
+echo -----------------------------------------------------
 cd /d "%BACKEND%"
-start "Stock Intel - Backend (keep open)" cmd /k "color 0B && echo. && echo  Stock Intel BACKEND running at http://localhost:8000 && echo  Press Ctrl+C to stop. && echo. && python -m uvicorn app:app --reload --port 8000"
-echo  [OK] Backend window opened.
-echo.
+start "Stock Intel - BACKEND" cmd /k "python -m uvicorn app:app --reload --port 8000"
+echo Backend window launched
 
-:: WAIT FOR BACKEND
-echo  Waiting for backend to start (up to 30 seconds)...
-set /a tries=0
-:waitbackend
-set /a tries+=1
-if %tries% gtr 15 (
-    echo  Backend took too long - continuing anyway...
-    goto startfrontend
-)
-timeout /t 2 /nobreak >nul
-curl -s --max-time 2 http://localhost:8000 >nul 2>&1
-if %errorlevel% neq 0 (
-    echo  Still waiting... attempt %tries% of 15
-    goto waitbackend
-)
-echo  [OK] Backend is responding!
 echo.
+echo Waiting 5 seconds for backend to start...
+timeout /t 5 /nobreak
 
-:: START FRONTEND
-:startfrontend
-echo  Starting frontend server...
+echo.
+echo -----------------------------------------------------
+echo STEP 9 - Starting Frontend
+echo -----------------------------------------------------
 cd /d "%FRONTEND%"
-start "Stock Intel - Frontend (keep open)" cmd /k "color 0E && echo. && echo  Stock Intel FRONTEND running at http://localhost:5173 && echo  Press Ctrl+C to stop. && echo. && npm run dev"
-echo  [OK] Frontend window opened.
-echo.
+start "Stock Intel - FRONTEND" cmd /k "npm run dev"
+echo Frontend window launched
 
-:: WAIT FOR FRONTEND
-echo  Waiting for frontend to compile (up to 30 seconds)...
-set /a tries=0
-:waitfrontend
-set /a tries+=1
-if %tries% gtr 15 (
-    echo  Opening browser anyway...
-    goto openbrowser
-)
-timeout /t 2 /nobreak >nul
-curl -s --max-time 2 http://localhost:5173 >nul 2>&1
-if %errorlevel% neq 0 (
-    echo  Still compiling... attempt %tries% of 15
-    goto waitfrontend
-)
-echo  [OK] Frontend is ready!
 echo.
+echo Waiting 8 seconds for frontend to compile...
+timeout /t 8 /nobreak
 
-:: OPEN BROWSER
-:openbrowser
-echo  Opening browser...
+echo.
+echo -----------------------------------------------------
+echo STEP 10 - Opening Browser
+echo -----------------------------------------------------
 start "" "http://localhost:5173"
+echo Browser opened at http://localhost:5173
 
 echo.
-echo  =====================================================
-echo    Stock Intel is RUNNING!
+echo =====================================================
+echo  ALL DONE - Stock Intel should be open in browser
+echo  Backend  : http://localhost:8000
+echo  Frontend : http://localhost:5173
+echo  API Docs : http://localhost:8000/docs
+echo =====================================================
 echo.
-echo    Frontend  : http://localhost:5173
-echo    Backend   : http://localhost:8000
-echo    API Docs  : http://localhost:8000/docs
+
+:end
 echo.
-echo    To STOP: close the two server windows.
-echo  =====================================================
-echo.
+echo === WINDOW WILL STAY OPEN - read any errors above ===
 pause
