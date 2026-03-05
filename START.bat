@@ -1,153 +1,92 @@
 @echo off
-title Stock Intel - Debug Launcher
+title Stock Intel Launcher
 color 0A
 cls
 
-echo =====================================================
-echo  Stock Intel - DEBUG MODE
-echo  This window will STAY OPEN so you can see errors
-echo =====================================================
+echo.
+echo  =====================================================
+echo    Stock Intel - Cut through the noise.
+echo    Starting up - please wait...
+echo  =====================================================
 echo.
 
-:: Set paths
 set "ROOT=%~dp0"
 set "BACKEND=%ROOT%backend"
 set "FRONTEND=%ROOT%frontend"
 
-echo ROOT     = %ROOT%
-echo BACKEND  = %BACKEND%
-echo FRONTEND = %FRONTEND%
+echo  Root     : %ROOT%
+echo  Backend  : %BACKEND%
+echo  Frontend : %FRONTEND%
 echo.
-echo -----------------------------------------------------
-echo STEP 1 - Checking Python
-echo -----------------------------------------------------
+
+echo  [CHECK] Python...
 python --version
-if %errorlevel% neq 0 (
-    echo.
-    echo ERROR: Python not found
-    echo Install from https://python.org
-    echo.
-    goto :end
-)
-
+if %errorlevel% neq 0 ( echo  [ERROR] Python not found. Install from https://python.org & pause & exit /b 1 )
+echo  [OK] Python found.
 echo.
-echo -----------------------------------------------------
-echo STEP 2 - Checking pip
-echo -----------------------------------------------------
+
+echo  [CHECK] pip...
 python -m pip --version
-if %errorlevel% neq 0 (
-    echo.
-    echo ERROR: pip not found inside Python
-    echo Run this to fix: python -m ensurepip --upgrade
-    echo.
-    goto :end
-)
-
+if %errorlevel% neq 0 ( echo  [ERROR] pip missing. Run: python -m ensurepip --upgrade & pause & exit /b 1 )
+echo  [OK] pip found.
 echo.
-echo -----------------------------------------------------
-echo STEP 3 - Checking Node
-echo -----------------------------------------------------
+
+echo  [CHECK] Node.js...
 node --version
-if %errorlevel% neq 0 (
-    echo.
-    echo ERROR: Node.js not found
-    echo Install from https://nodejs.org then close and reopen this window
-    echo.
-    goto :end
-)
-
+if %errorlevel% neq 0 ( echo  [ERROR] Node.js not found. Install from https://nodejs.org & pause & exit /b 1 )
+echo  [OK] Node found.
 echo.
-echo -----------------------------------------------------
-echo STEP 4 - Checking npm
-echo -----------------------------------------------------
+
+echo  [CHECK] npm...
 npm --version
-if %errorlevel% neq 0 (
-    echo.
-    echo ERROR: npm not found
-    echo Reinstall Node.js from https://nodejs.org
-    echo.
-    goto :end
-)
-
+if %errorlevel% neq 0 ( echo  [ERROR] npm not found. Reinstall Node.js & pause & exit /b 1 )
+echo  [OK] npm found.
 echo.
-echo -----------------------------------------------------
-echo STEP 5 - Installing Python packages
-echo -----------------------------------------------------
+
+echo  [STEP 1/4] Installing Python packages...
 python -m pip install -r "%BACKEND%\requirements.txt"
-if %errorlevel% neq 0 (
-    echo.
-    echo ERROR: Python packages failed to install
-    echo See error above
-    echo.
-    goto :end
-)
-
+if %errorlevel% neq 0 ( echo  [ERROR] Python install failed & pause & exit /b 1 )
+echo  [OK] Python packages ready.
 echo.
-echo -----------------------------------------------------
-echo STEP 6 - Installing Node packages
-echo -----------------------------------------------------
+
+echo  [STEP 2/4] Installing Node packages...
 cd /d "%FRONTEND%"
 npm install
-if %errorlevel% neq 0 (
-    echo.
-    echo ERROR: npm install failed
-    echo See error above
-    echo.
-    goto :end
-)
-
+if %errorlevel% neq 0 ( echo  [ERROR] npm install failed & pause & exit /b 1 )
+echo  [OK] Node packages ready.
 echo.
-echo -----------------------------------------------------
-echo STEP 7 - Creating .env.local
-echo -----------------------------------------------------
+
+echo  [STEP 3/4] Setting up environment...
 if not exist "%FRONTEND%\.env.local" (
     echo VITE_API_BASE=http://localhost:8000> "%FRONTEND%\.env.local"
-    echo Created .env.local
+    echo  [OK] .env.local created.
 ) else (
-    echo .env.local already exists - skipping
+    echo  [OK] .env.local exists.
 )
-
 echo.
-echo -----------------------------------------------------
-echo STEP 8 - Starting Backend
-echo -----------------------------------------------------
+
+echo  [STEP 4/4] Launching servers...
 cd /d "%BACKEND%"
-start "Stock Intel - BACKEND" cmd /k "python -m uvicorn app:app --reload --port 8000"
-echo Backend window launched
+start "Stock Intel - BACKEND" cmd /k "color 0B && echo. && echo  BACKEND: http://localhost:8000 && echo. && python -m uvicorn app:app --reload --port 8000"
 
-echo.
-echo Waiting 5 seconds for backend to start...
-timeout /t 5 /nobreak
+timeout /t 5 /nobreak >nul
 
-echo.
-echo -----------------------------------------------------
-echo STEP 9 - Starting Frontend
-echo -----------------------------------------------------
 cd /d "%FRONTEND%"
-start "Stock Intel - FRONTEND" cmd /k "npm run dev"
-echo Frontend window launched
+start "Stock Intel - FRONTEND" cmd /k "color 0E && echo. && echo  FRONTEND: http://localhost:5173 && echo. && npm run dev"
 
-echo.
-echo Waiting 8 seconds for frontend to compile...
-timeout /t 8 /nobreak
+echo  Waiting for frontend to compile...
+timeout /t 10 /nobreak >nul
 
-echo.
-echo -----------------------------------------------------
-echo STEP 10 - Opening Browser
-echo -----------------------------------------------------
+echo  Opening browser...
 start "" "http://localhost:5173"
-echo Browser opened at http://localhost:5173
 
 echo.
-echo =====================================================
-echo  ALL DONE - Stock Intel should be open in browser
-echo  Backend  : http://localhost:8000
-echo  Frontend : http://localhost:5173
-echo  API Docs : http://localhost:8000/docs
-echo =====================================================
+echo  =====================================================
+echo    Stock Intel is RUNNING!
+echo    App      : http://localhost:5173
+echo    API      : http://localhost:8000
+echo    API Docs : http://localhost:8000/docs
+echo    Close the two server windows to stop.
+echo  =====================================================
 echo.
-
-:end
-echo.
-echo === WINDOW WILL STAY OPEN - read any errors above ===
 pause
