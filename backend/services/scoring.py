@@ -1,229 +1,348 @@
 """
-scoring.py — Ndindi-style scoring engine.
+scoring.py — 60-point objective scoring engine (per spec).
 
-Produces four scores (0–100) per stock:
-  D  = Daily Score     (most undervalued today)
-  M  = Monthly Score   (fundamentally strong)
-  L  = Long-Term Score (best long-term value)
-  BP = Best Pick       (0.4*D + 0.3*M + 0.3*L)
+Six categories, each 0–10:
+  1. Profitability  (0–10)
+  2. Dividends      (0–10)
+  3. Growth         (0–10)
+  4. Value          (0–10)
+  5. Asset Safety   (0–10)
+  6. Debt Safety    (0–10)
 
-All sub-scores use min-max normalisation so the engine is
-self-calibrating even when absolute values differ by market.
+Total: 0–60
+  50–60 → Strong Buy
+  40–49 → Buy
+  30–39 → Hold
+  20–29 → Weak
+  <20   → Avoid
 """
 
 import math
-import numpy as np
 import pandas as pd
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-#  Helpers
-# ──────────────────────────────────────────────────────────────────────────────
-
-def _norm(value: float, min_val: float, max_val: float, invert: bool = False) -> float:
-    """Min-max normalise to [0, 100].  If invert=True, lower is better."""
-    if max_val == min_val:
-        return 50.0
-    score = (value - min_val) / (max_val - min_val) * 100
-    score = max(0.0, min(100.0, score))
-    return 100.0 - score if invert else score
-
-
-def _safe(value, default=0.0) -> float:
-    """Return float or default if None / NaN."""
-    if value is None:
+def _safe(val, default=0.0) -> float:
+    if val is None:
         return default
     try:
-        f = float(value)
-        return default if math.isnan(f) or math.isinf(f) else f
+        f = float(val)
+        return default if (math.isnan(f) or math.isinf(f)) else f
     except (TypeError, ValueError):
         return default
 
 
-def _pct_change(series: pd.Series, periods: int = 1) -> float:
-    """Percentage change over `periods` rows, clamped to [-1, 1]."""
-    if len(series) <= periods:
+def _cagr(start_val: float, end_val: float, years: int) -> float:
+    if start_val <= 0 or years <= 0:
         return 0.0
-    old = _safe(series.iloc[-(periods + 1)])
-    new = _safe(series.iloc[-1])
-    if old == 0:
+    try:
+        return (end_val / start_val) ** (1.0 / years) - 1.0
+    except Exception:
         return 0.0
-    return max(-1.0, min(1.0, (new - old) / old))
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-#  Score components
-# ──────────────────────────────────────────────────────────────────────────────
+# ── 1. PROFITABILITY (0–10) ───────────────────────────────────────────────────
 
-def _daily_score(prices: pd.DataFrame, fund: dict) -> float:
-    """
-    Daily Score — "Most undervalued today"
-    Factors (equally weighted):
-      1. P/B ratio         (lower = better)
-      2. P/E ratio         (lower = better)
-      3. Price vs 52-wk low (closer to low = more undervalued)
-      4. Dividend yield    (higher = better)
-      5. Daily volatility  (lower = better — less risky on entry)
-    """
-    scores = []
+def _profitability_score(fund: dict) -> dict:
+    ni_history = fund.get("net_income_history", [])
+    roe = _safe(fund.get("roe"))
 
-    # 1. P/B (invert — lower P/B → more undervalued)
-    pb = _safe(fund.get("pb"), 2.0)
-    scores.append(_norm(pb, 0.5, 5.0, invert=True))
-
-    # 2. P/E (invert)
-    pe = _safe(fund.get("pe"), 15.0)
-    scores.append(_norm(pe, 3.0, 40.0, invert=True))
-
-    # 3. Price vs 52-week low
-    if not prices.empty and len(prices) >= 2:
-        close = prices["close"]
-        low_52  = float(close.tail(252).min())
-        high_52 = float(close.tail(252).max())
-        current = float(close.iloc[-1])
-        # Score 100 when price == 52-week low, 0 when at high
-        scores.append(_norm(current, low_52, high_52, invert=True))
+    if len(ni_history) >= 2:
+        increases = sum(
+            1 for i in range(1, len(ni_history))
+            if _safe(ni_history[i]) > _safe(ni_history[i - 1])
+        )
+        if increases >= 4:
+            trend_score = 5
+        elif increases >= 3:
+            trend_score = 3
+        else:
+            trend_score = 0
     else:
-        scores.append(50.0)
+        trend_score = 0
 
-    # 4. Dividend yield (higher is better)
-    dy = _safe(fund.get("dividend_yield"), 0.0)
-    scores.append(_norm(dy, 0.0, 0.15, invert=False))
-
-    # 5. Daily volatility (invert — lower vol = safer entry)
-    if not prices.empty and len(prices) >= 20:
-        daily_returns = prices["close"].pct_change().dropna().tail(20)
-        vol = float(daily_returns.std()) if len(daily_returns) > 1 else 0.05
+    if roe > 0.15:
+        roe_score = 5
+    elif roe >= 0.10:
+        roe_score = 3
     else:
-        vol = 0.05
-    scores.append(_norm(vol, 0.0, 0.05, invert=True))
+        roe_score = 1
 
-    return round(float(np.mean(scores)), 1)
+    total = trend_score + roe_score
+    return {
+        "profitability_score": total,
+        "_profitability_detail": {
+            "trend": trend_score,
+            "roe": roe_score,
+            "roe_value": round(roe * 100, 1),
+        }
+    }
 
 
-def _monthly_score(prices: pd.DataFrame, fund: dict) -> float:
-    """
-    Monthly Score — "Most fundamentally strong"
-    Factors:
-      1. 1-month price trend   (positive = good)
-      2. Volume trend          (rising volume = good)
-      3. EPS                   (higher = better)
-      4. Revenue trend proxy   (using EPS as proxy if no history)
-      5. Debt/Equity           (lower = better)
-      6. Dividend yield        (higher = better)
-    """
-    scores = []
+# ── 2. DIVIDENDS (0–10) ───────────────────────────────────────────────────────
 
-    # 1. 1-month price trend (20 trading days)
-    if not prices.empty and len(prices) >= 20:
-        trend_1m = _pct_change(prices["close"], 20)
+def _dividend_score(fund: dict) -> dict:
+    dps_history = fund.get("dps_history", [])
+    net_income = _safe(fund.get("net_income"))
+    total_divs = _safe(fund.get("total_dividends"))
+
+    years_paid = sum(1 for d in dps_history if _safe(d) > 0)
+    if years_paid >= 5:
+        consistency_score = 5
+    elif years_paid >= 3:
+        consistency_score = 3
     else:
-        trend_1m = 0.0
-    scores.append(_norm(trend_1m, -0.15, 0.15))
+        consistency_score = 0
 
-    # 2. Volume trend
-    if not prices.empty and len(prices) >= 20:
-        vol_trend = _pct_change(prices["volume"], 20)
+    if net_income > 0:
+        payout = total_divs / net_income
     else:
-        vol_trend = 0.0
-    scores.append(_norm(vol_trend, -0.5, 0.5))
+        payout = 0.0
 
-    # 3. EPS (higher = better)
-    eps = _safe(fund.get("eps"), 0.0)
-    scores.append(_norm(eps, -5.0, 20.0))
-
-    # 4. Revenue (higher = better; normalised in billions)
-    revenue = _safe(fund.get("revenue"), 0.0) / 1e9
-    scores.append(_norm(revenue, 0.0, 500.0))
-
-    # 5. Debt / Equity proxy (lower debt relative to book value = better)
-    debt = _safe(fund.get("debt"), 0.0)
-    bvps = _safe(fund.get("bvps"), 1.0)
-    # Rough D/E via total debt / (bvps * some share count proxy)
-    # We normalise the debt figure directly since we lack share count
-    scores.append(_norm(debt / 1e9, 0.0, 200.0, invert=True))
-
-    # 6. Dividend yield
-    dy = _safe(fund.get("dividend_yield"), 0.0)
-    scores.append(_norm(dy, 0.0, 0.15))
-
-    return round(float(np.mean(scores)), 1)
-
-
-def _longterm_score(prices: pd.DataFrame, fund: dict) -> float:
-    """
-    Long-Term Score — "Best long-term value picks"
-    Factors:
-      1. 1-year price trend
-      2. EPS quality (positive EPS = good)
-      3. Dividend yield + consistency proxy
-      4. ROE                   (higher = better)
-      5. Profit margin         (higher = better)
-      6. P/B ratio             (lower = better for value investors)
-    """
-    scores = []
-
-    # 1. 1-year price trend (252 trading days)
-    if not prices.empty and len(prices) >= 252:
-        trend_1y = _pct_change(prices["close"], 252)
-    elif not prices.empty:
-        trend_1y = _pct_change(prices["close"], len(prices) - 1)
+    if 0.30 <= payout <= 0.60:
+        payout_score = 5
+    elif payout < 0.30 or (0.60 < payout <= 0.80):
+        payout_score = 2
     else:
-        trend_1y = 0.0
-    scores.append(_norm(trend_1y, -0.3, 0.5))
+        payout_score = 0
 
-    # 2. EPS quality
-    eps = _safe(fund.get("eps"), 0.0)
-    scores.append(_norm(eps, -5.0, 20.0))
-
-    # 3. Dividend (consistency proxy = yield > 0 is consistent; higher = better)
-    dy = _safe(fund.get("dividend_yield"), 0.0)
-    scores.append(_norm(dy, 0.0, 0.15))
-
-    # 4. ROE (higher = better; normalise 0–40%)
-    roe = _safe(fund.get("roe"), 0.0)
-    scores.append(_norm(roe, 0.0, 0.40))
-
-    # 5. Profit margin (higher = better; normalise 0–50%)
-    margin = _safe(fund.get("margin"), 0.0)
-    scores.append(_norm(margin, 0.0, 0.50))
-
-    # 6. P/B (lower = better — value pick)
-    pb = _safe(fund.get("pb"), 2.0)
-    scores.append(_norm(pb, 0.5, 5.0, invert=True))
-
-    return round(float(np.mean(scores)), 1)
+    total = consistency_score + payout_score
+    return {
+        "dividend_score": total,
+        "_dividend_detail": {
+            "consistency": consistency_score,
+            "payout": payout_score,
+            "payout_ratio": round(payout * 100, 1),
+            "years_paid": years_paid,
+        }
+    }
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-#  Public interface
-# ──────────────────────────────────────────────────────────────────────────────
+# ── 3. GROWTH (0–10) ─────────────────────────────────────────────────────────
+
+def _growth_score(fund: dict) -> dict:
+    rev_history = fund.get("revenue_history", [])
+    ni_history = fund.get("net_income_history", [])
+
+    if len(rev_history) >= 2:
+        start_rev = _safe(rev_history[0])
+        end_rev = _safe(rev_history[-1])
+        years = len(rev_history) - 1
+        rev_cagr = _cagr(start_rev, end_rev, years)
+    else:
+        rev_cagr = 0.0
+
+    if rev_cagr > 0.10:
+        rev_score = 5
+    elif rev_cagr >= 0.05:
+        rev_score = 3
+    else:
+        rev_score = 1
+
+    if len(ni_history) >= 2:
+        start_ni = _safe(ni_history[0])
+        end_ni = _safe(ni_history[-1])
+        years = len(ni_history) - 1
+        earn_cagr = _cagr(abs(start_ni) if start_ni != 0 else 1, abs(end_ni), years)
+        if start_ni < 0:
+            earn_cagr = 0.0
+    else:
+        earn_cagr = 0.0
+
+    if earn_cagr > 0.10:
+        earn_score = 5
+    elif earn_cagr >= 0.05:
+        earn_score = 3
+    else:
+        earn_score = 1
+
+    total = rev_score + earn_score
+    return {
+        "growth_score": total,
+        "_growth_detail": {
+            "rev_cagr": round(rev_cagr * 100, 1),
+            "earn_cagr": round(earn_cagr * 100, 1),
+            "rev_score": rev_score,
+            "earn_score": earn_score,
+        }
+    }
+
+
+# ── 4. VALUE (0–10) ──────────────────────────────────────────────────────────
+
+def _value_score(fund: dict) -> dict:
+    pb = _safe(fund.get("pb"), 99.0)
+    pe = _safe(fund.get("pe"), 99.0)
+
+    if pb < 1.0:
+        pb_score = 5
+    elif pb <= 1.5:
+        pb_score = 3
+    else:
+        pb_score = 0
+
+    if pe < 6.0:
+        pe_score = 5
+    elif pe <= 10.0:
+        pe_score = 3
+    else:
+        pe_score = 0
+
+    total = pb_score + pe_score
+    return {
+        "value_score": total,
+        "_value_detail": {
+            "pb": round(pb, 2),
+            "pe": round(pe, 2),
+            "pb_score": pb_score,
+            "pe_score": pe_score,
+        }
+    }
+
+
+# ── 5. ASSET SAFETY (0–10) ────────────────────────────────────────────────────
+
+def _asset_safety_score(fund: dict) -> dict:
+    eps = _safe(fund.get("eps"))
+    price = _safe(fund.get("price"), 1.0)
+    total_assets = _safe(fund.get("total_assets"))
+    market_cap = _safe(fund.get("market_cap"), 1.0)
+
+    ey = eps / price if price > 0 else 0.0
+    if ey > 0.15:
+        ey_score = 5
+    elif ey >= 0.10:
+        ey_score = 3
+    else:
+        ey_score = 0
+
+    ac = total_assets / market_cap if market_cap > 0 else 0.0
+    if ac > 2.0:
+        ac_score = 5
+    elif ac >= 1.0:
+        ac_score = 3
+    else:
+        ac_score = 0
+
+    total = ey_score + ac_score
+    return {
+        "asset_safety_score": total,
+        "_asset_safety_detail": {
+            "earnings_yield": round(ey * 100, 1),
+            "asset_coverage": round(ac, 2),
+            "ey_score": ey_score,
+            "ac_score": ac_score,
+        }
+    }
+
+
+# ── 6. DEBT SAFETY (0–10) ────────────────────────────────────────────────────
+
+def _debt_safety_score(fund: dict) -> dict:
+    de = _safe(fund.get("debt_to_equity"), 999.0)
+    icr = _safe(fund.get("interest_coverage"), 0.0)
+
+    if de < 0.5:
+        de_score = 5
+    elif de <= 1.0:
+        de_score = 3
+    else:
+        de_score = 0
+
+    if icr > 5.0:
+        icr_score = 5
+    elif icr >= 2.0:
+        icr_score = 3
+    else:
+        icr_score = 0
+
+    total = de_score + icr_score
+    return {
+        "debt_safety_score": total,
+        "_debt_safety_detail": {
+            "de_ratio": round(de, 2),
+            "icr": round(icr, 2),
+            "de_score": de_score,
+            "icr_score": icr_score,
+        }
+    }
+
+
+# ── Score label & color ───────────────────────────────────────────────────────
+
+def score_label(total: int) -> str:
+    if total >= 50:
+        return "Strong Buy"
+    elif total >= 40:
+        return "Buy"
+    elif total >= 30:
+        return "Hold"
+    elif total >= 20:
+        return "Weak"
+    else:
+        return "Avoid"
+
+
+def score_color(total: int) -> str:
+    if total >= 50:
+        return "#49A078"
+    elif total >= 40:
+        return "#86efac"
+    elif total >= 30:
+        return "#facc15"
+    elif total >= 20:
+        return "#f97316"
+    else:
+        return "#ef4444"
+
+
+# ── Public interface ──────────────────────────────────────────────────────────
 
 class ScoringEngine:
 
-    def compute_scores(self, prices: pd.DataFrame, fund: dict) -> dict:
-        """
-        Compute D, M, L, BP scores for a single stock.
+    def compute_scores(self, prices, fund: dict) -> dict:
+        if prices is not None and hasattr(prices, 'empty') and not prices.empty:
+            fund = dict(fund)
+            fund["price"] = float(prices["close"].iloc[-1])
 
-        Parameters
-        ----------
-        prices : pd.DataFrame
-            OHLCV dataframe with DatetimeIndex (from DataLoader).
-        fund : dict
-            Fundamentals dict (from DataLoader).
+        r1 = _profitability_score(fund)
+        r2 = _dividend_score(fund)
+        r3 = _growth_score(fund)
+        r4 = _value_score(fund)
+        r5 = _asset_safety_score(fund)
+        r6 = _debt_safety_score(fund)
 
-        Returns
-        -------
-        dict with keys: daily, monthly, long_term, best_pick
-        """
-        d = _daily_score(prices, fund)
-        m = _monthly_score(prices, fund)
-        l = _longterm_score(prices, fund)
-        bp = round(0.4 * d + 0.3 * m + 0.3 * l, 1)
+        total = (
+            r1["profitability_score"] +
+            r2["dividend_score"] +
+            r3["growth_score"] +
+            r4["value_score"] +
+            r5["asset_safety_score"] +
+            r6["debt_safety_score"]
+        )
+
+        normalised = round(total / 60 * 100, 1)
 
         return {
-            "daily":      d,
-            "monthly":    m,
-            "long_term":  l,
-            "best_pick":  bp,
+            "profitability_score": r1["profitability_score"],
+            "dividend_score":      r2["dividend_score"],
+            "growth_score":        r3["growth_score"],
+            "value_score":         r4["value_score"],
+            "asset_safety_score":  r5["asset_safety_score"],
+            "debt_safety_score":   r6["debt_safety_score"],
+            "total_score":         total,
+            "label":               score_label(total),
+            "color":               score_color(total),
+            "detail": {
+                "profitability": r1["_profitability_detail"],
+                "dividend":      r2["_dividend_detail"],
+                "growth":        r3["_growth_detail"],
+                "value":         r4["_value_detail"],
+                "asset_safety":  r5["_asset_safety_detail"],
+                "debt_safety":   r6["_debt_safety_detail"],
+            },
+            # Legacy keys for backward compat
+            "daily":     normalised,
+            "monthly":   normalised,
+            "long_term": normalised,
+            "best_pick": normalised,
         }
