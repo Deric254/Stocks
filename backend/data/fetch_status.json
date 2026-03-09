@@ -1,194 +1,128 @@
 {
-  "EQTY.NR": {
+  "SBIC": {
     "ok": true,
-    "source": "yfinance(EQTY)",
-    "price": 26.77,
-    "updated_at": "2026-03-09T15:05:53.432177"
+    "source": "nse_scraper",
+    "price": 114.54,
+    "updated_at": "2026-03-09T15:19:07.247461"
   },
-  "KCB.NR": {
-    "ok": false,
-    "source": "unavailable",
-    "price": 0,
-    "updated_at": "2026-03-09T15:05:59.696602"
-  },
-  "DTK.NR": {
-    "ok": false,
-    "source": "unavailable",
-    "price": 0,
-    "updated_at": "2026-03-09T15:08:24.132151"
-  },
-  "ABSA.NR": {
-    "ok": false,
-    "source": "unavailable",
-    "price": 0,
-    "updated_at": "2026-03-09T15:06:06.445259"
-  },
-  "NCBA.NR": {
-    "ok": false,
-    "source": "unavailable",
-    "price": 0,
-    "updated_at": "2026-03-09T15:06:10.176750"
-  },
-  "COOP.NR": {
-    "ok": false,
-    "source": "unavailable",
-    "price": 0,
-    "updated_at": "2026-03-09T15:06:05.485345"
-  },
-  "HF.NR": {
+  "EABL": {
     "ok": true,
-    "source": "yfinance(HF)",
-    "price": 21.33,
-    "updated_at": "2026-03-09T15:06:17.947990"
+    "source": "nse_scraper",
+    "price": 170.47,
+    "updated_at": "2026-03-09T15:19:07.922175"
   },
-  "SCBK.NR": {
-    "ok": false,
-    "source": "unavailable",
-    "price": 0,
-    "updated_at": "2026-03-09T15:06:07.492843"
-  },
-  "JUB.NRO": {
-    "ok": false,
-    "source": "unavailable",
-    "price": 0,
-    "updated_at": "2026-03-09T15:06:31.288207"
-  },
-  "I&M.NR": {
-    "ok": false,
-    "source": "unavailable",
-    "price": 0,
-    "updated_at": "2026-03-09T15:06:10.445008"
-  },
-  "SCOM.NR": {
-    "ok": false,
-    "source": "unavailable",
-    "price": 0,
-    "updated_at": "2026-03-09T15:06:29.528324"
-  },
-  "EABL.NR": {
-    "ok": false,
-    "source": "unavailable",
-    "price": 0,
-    "updated_at": "2026-03-09T15:06:33.297543"
-  },
-  "SBIC.NR": {
-    "ok": false,
-    "source": "unavailable",
-    "price": 0,
-    "updated_at": "2026-03-09T15:06:28.101527"
-  },
-  "UNGA.NR": {
-    "ok": false,
-    "source": "unavailable",
-    "price": 0,
-    "updated_at": "2026-03-09T15:06:35.586222"
-  },
-  "BAT.NR": {
-    "ok": false,
-    "source": "unavailable",
-    "price": 0,
-    "updated_at": "2026-03-09T15:06:35.557060"
-  },
-  "KCGM.NR": {
-    "ok": false,
-    "source": "unavailable",
-    "price": 0,
-    "updated_at": "2026-03-09T15:06:37.771786"
-  },
-  "JUB.NR": {
-    "ok": false,
-    "source": "unavailable",
-    "price": 0,
-    "updated_at": "2026-03-09T15:06:46.320579"
-  },
-  "BRIT.NR": {
-    "ok": false,
-    "source": "unavailable",
-    "price": 0,
-    "updated_at": "2026-03-09T15:06:47.116958"
-  },
-  "KNRE.NR": {
-    "ok": false,
-    "source": "unavailable",
-    "price": 0,
-    "updated_at": "2026-03-09T15:06:56.637401"
-  },
-  "CIC.NR": {
-    "ok": false,
-    "source": "unavailable",
-    "price": 0,
-    "updated_at": "2026-03-09T15:06:56.620893"
-  },
-  "TOTL.NR": {
+  "UNGA": {
     "ok": true,
-    "source": "yfinance(TOTL)",
-    "price": 40.19,
-    "updated_at": "2026-03-09T15:06:54.258903"
+    "source": "nse_scraper",
+    "price": 31.77,
+    "updated_at": "2026-03-09T15:19:08.206641"
   },
-  "BAMB.NR": {
+  "KCGM": {
     "ok": true,
-    "source": "yfinance(BAMB)",
-    "price": 26.49,
-    "updated_at": "2026-03-09T15:07:04.297256"
+    "source": "nse_scraper",
+    "price": 4.98,
+    "updated_at": "2026-03-09T15:19:11.457931"
   },
-  "KENOL.NR": {
-    "ok": false,
-    "source": "unavailable",
-    "price": 0,
-    "updated_at": "2026-03-09T15:07:01.579632"
-  },
-  "ARM.NR": {
+  "LIMT": {
     "ok": true,
-    "source": "yfinance(ARM)",
-    "price": 114.38,
-    "updated_at": "2026-03-09T15:07:05.340685"
+    "source": "nse_scraper",
+    "price": 550.71,
+    "updated_at": "2026-03-09T15:20:53.979276"
   },
-  "CABL.NR": {
-    "ok": false,
-    "source": "unavailable",
-    "price": 0,
-    "updated_at": "2026-03-09T15:07:09.732756"
+  "BAT": {
+    "ok": true,
+    "source": "nse_scraper",
+    "price": 434.19,
+    "updated_at": "2026-03-09T15:19:11.830472"
   },
-  "BERG.NR": {
-    "ok": false,
-    "source": "unavailable",
-    "price": 0,
-    "updated_at": "2026-03-09T15:07:21.219141"
+  "SASN": {
+    "ok": true,
+    "source": "nse_scraper",
+    "price": 18.37,
+    "updated_at": "2026-03-09T15:20:52.803753"
   },
-  "SASN.NR": {
-    "ok": false,
-    "source": "unavailable",
-    "price": 0,
-    "updated_at": "2026-03-09T15:07:19.645678"
+  "KAPC": {
+    "ok": true,
+    "source": "nse_scraper",
+    "price": 110.99,
+    "updated_at": "2026-03-09T15:20:52.589936"
   },
-  "KAPC.NR": {
+  "TPSE": {
     "ok": false,
-    "source": "unavailable",
+    "source": "stub",
     "price": 0,
-    "updated_at": "2026-03-09T15:07:21.240677"
+    "updated_at": "2026-03-09T15:21:07.906039"
   },
-  "LIMT.NR": {
-    "ok": false,
-    "source": "unavailable",
-    "price": 0,
-    "updated_at": "2026-03-09T15:07:23.922779"
+  "CTUM": {
+    "ok": true,
+    "source": "nse_scraper",
+    "price": 17.84,
+    "updated_at": "2026-03-09T15:20:55.370878"
   },
-  "TPSE.NR": {
-    "ok": false,
-    "source": "unavailable",
-    "price": 0,
-    "updated_at": "2026-03-09T15:07:23.197801"
+  "BRIT": {
+    "ok": true,
+    "source": "nse_scraper",
+    "price": 5.62,
+    "updated_at": "2026-03-09T15:19:42.457952"
   },
-  "CTUM.NR": {
+  "BERG": {
     "ok": false,
-    "source": "unavailable",
+    "source": "stub",
     "price": 0,
-    "updated_at": "2026-03-09T15:07:30.495416"
+    "updated_at": "2026-03-09T15:21:04.620490"
   },
-  "NSE.NR": {
-    "ok": false,
-    "source": "unavailable",
-    "price": 0,
-    "updated_at": "2026-03-09T15:07:31.692688"
+  "NSE": {
+    "ok": true,
+    "source": "nse_scraper",
+    "price": 9.88,
+    "updated_at": "2026-03-09T15:20:55.959059"
+  },
+  "JUB": {
+    "ok": true,
+    "source": "nse_scraper",
+    "price": 291.11,
+    "updated_at": "2026-03-09T15:20:11.460689"
+  },
+  "TOTL": {
+    "ok": true,
+    "source": "nse_scraper",
+    "price": 20.69,
+    "updated_at": "2026-03-09T15:20:12.441144"
+  },
+  "CIC": {
+    "ok": true,
+    "source": "nse_scraper",
+    "price": 2.38,
+    "updated_at": "2026-03-09T15:20:13.345009"
+  },
+  "KNRE": {
+    "ok": true,
+    "source": "nse_scraper",
+    "price": 19.24,
+    "updated_at": "2026-03-09T15:20:13.973779"
+  },
+  "KENOL": {
+    "ok": true,
+    "source": "nse_scraper",
+    "price": 10.9,
+    "updated_at": "2026-03-09T15:20:14.594544"
+  },
+  "ARM": {
+    "ok": true,
+    "source": "nse_scraper",
+    "price": 0.49,
+    "updated_at": "2026-03-09T15:20:17.717772"
+  },
+  "BAMB": {
+    "ok": true,
+    "source": "nse_scraper",
+    "price": 44.08,
+    "updated_at": "2026-03-09T15:20:16.553570"
+  },
+  "CABL": {
+    "ok": true,
+    "source": "nse_scraper",
+    "price": 3.49,
+    "updated_at": "2026-03-09T15:20:35.642196"
   }
 }

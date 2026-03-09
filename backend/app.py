@@ -438,27 +438,26 @@ def refresh_stock(body: dict):
         ticker = str(body.get("ticker","")).upper()
         if not ticker:
             raise HTTPException(status_code=400, detail="ticker required")
-        if "." not in ticker:
-            ticker += ".NR"
-        # Clear from cache files so next get_price_data fetches fresh
-        from services.data_loader import PRICES_CSV, FUNDAMENTALS_CSV, _cache_lock
-        import pandas as pd
-        for csv_path in [PRICES_CSV, FUNDAMENTALS_CSV]:
-            if csv_path.exists():
+        base = ticker.split(".")[0]
+        # Clear NSE scraper caches for this ticker
+        from pathlib import Path
+        import json
+        cache_dir = Path(__file__).parent / "data" / "nse_cache"
+        for cache_file in ["prices.json", "fundamentals.json"]:
+            cp = cache_dir / cache_file
+            if cp.exists():
                 try:
-                    with _cache_lock:
-                        df = pd.read_csv(csv_path)
-                        df = df[df["ticker"] != ticker]
-                        df.to_csv(csv_path, index=False)
-                except Exception:
-                    pass
-        # Now fetch fresh
+                    with open(cp) as f: data = json.load(f)
+                    data.pop(base, None)
+                    with open(cp,"w") as f: json.dump(data, f, indent=2)
+                except Exception: pass
+        # Fetch fresh
         prices = loader.get_price_data(ticker)
         funds  = loader.get_fundamentals(ticker)
         return {
-            "ticker":  ticker,
-            "price_ok": not prices.empty,
-            "fund_ok":  bool(funds.get("pe") or funds.get("eps")),
+            "ticker":      ticker,
+            "price_ok":    not prices.empty,
+            "fund_ok":     bool(funds.get("pe") or funds.get("eps")),
             "last_update": funds.get("last_update",""),
         }
     except Exception as e:

@@ -37,7 +37,7 @@ BT_CACHE      = GOLD_DIR / "backtest_cache.json"
 PRICES_FILE   = GOLD_DIR / "prices_cache.json"
 
 # Free API keys — Twelve Data (primary), Alpha Vantage (fallback)
-TWELVE_KEY    = "demo"          # replace with real key from twelvedata.com (free)
+TWELVE_KEY    = "9d934205b1b1423ba8c75961658cec97"          # replace with real key from twelvedata.com (free)
 AV_KEY        = "demo"          # replace with real key from alphavantage.co (free)
 
 
