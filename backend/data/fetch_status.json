@@ -3,192 +3,192 @@
     "ok": true,
     "source": "yfinance(EQTY)",
     "price": 26.77,
-    "updated_at": "2026-03-09T14:51:25.140265"
+    "updated_at": "2026-03-09T15:05:53.432177"
   },
   "KCB.NR": {
     "ok": false,
     "source": "unavailable",
     "price": 0,
-    "updated_at": "2026-03-09T14:51:26.422484"
+    "updated_at": "2026-03-09T15:05:59.696602"
   },
   "DTK.NR": {
-    "ok": true,
-    "source": "yfinance(DTK)",
-    "price": 24.99,
-    "updated_at": "2026-03-09T14:51:24.928940"
+    "ok": false,
+    "source": "unavailable",
+    "price": 0,
+    "updated_at": "2026-03-09T15:08:24.132151"
   },
   "ABSA.NR": {
     "ok": false,
     "source": "unavailable",
     "price": 0,
-    "updated_at": "2026-03-09T14:51:26.406427"
+    "updated_at": "2026-03-09T15:06:06.445259"
   },
   "NCBA.NR": {
     "ok": false,
     "source": "unavailable",
     "price": 0,
-    "updated_at": "2026-03-09T14:51:26.414862"
+    "updated_at": "2026-03-09T15:06:10.176750"
   },
   "COOP.NR": {
     "ok": false,
     "source": "unavailable",
     "price": 0,
-    "updated_at": "2026-03-09T14:51:26.430598"
+    "updated_at": "2026-03-09T15:06:05.485345"
   },
   "HF.NR": {
     "ok": true,
     "source": "yfinance(HF)",
     "price": 21.33,
-    "updated_at": "2026-03-09T14:51:31.902015"
+    "updated_at": "2026-03-09T15:06:17.947990"
   },
   "SCBK.NR": {
     "ok": false,
     "source": "unavailable",
     "price": 0,
-    "updated_at": "2026-03-09T14:51:27.093545"
+    "updated_at": "2026-03-09T15:06:07.492843"
   },
   "JUB.NRO": {
     "ok": false,
     "source": "unavailable",
     "price": 0,
-    "updated_at": "2026-03-09T14:51:41.980095"
+    "updated_at": "2026-03-09T15:06:31.288207"
   },
   "I&M.NR": {
     "ok": false,
     "source": "unavailable",
     "price": 0,
-    "updated_at": "2026-03-09T14:51:30.214143"
+    "updated_at": "2026-03-09T15:06:10.445008"
   },
   "SCOM.NR": {
     "ok": false,
     "source": "unavailable",
     "price": 0,
-    "updated_at": "2026-03-09T14:51:35.489995"
+    "updated_at": "2026-03-09T15:06:29.528324"
   },
   "EABL.NR": {
     "ok": false,
     "source": "unavailable",
     "price": 0,
-    "updated_at": "2026-03-09T14:51:35.769164"
+    "updated_at": "2026-03-09T15:06:33.297543"
   },
   "SBIC.NR": {
     "ok": false,
     "source": "unavailable",
     "price": 0,
-    "updated_at": "2026-03-09T14:51:33.301486"
+    "updated_at": "2026-03-09T15:06:28.101527"
   },
   "UNGA.NR": {
     "ok": false,
     "source": "unavailable",
     "price": 0,
-    "updated_at": "2026-03-09T14:51:39.705532"
+    "updated_at": "2026-03-09T15:06:35.586222"
   },
   "BAT.NR": {
     "ok": false,
     "source": "unavailable",
     "price": 0,
-    "updated_at": "2026-03-09T14:51:38.752364"
+    "updated_at": "2026-03-09T15:06:35.557060"
   },
   "KCGM.NR": {
     "ok": false,
     "source": "unavailable",
     "price": 0,
-    "updated_at": "2026-03-09T14:51:55.919789"
+    "updated_at": "2026-03-09T15:06:37.771786"
   },
   "JUB.NR": {
     "ok": false,
     "source": "unavailable",
     "price": 0,
-    "updated_at": "2026-03-09T14:51:43.914282"
+    "updated_at": "2026-03-09T15:06:46.320579"
   },
   "BRIT.NR": {
     "ok": false,
     "source": "unavailable",
     "price": 0,
-    "updated_at": "2026-03-09T14:51:43.933386"
+    "updated_at": "2026-03-09T15:06:47.116958"
   },
   "KNRE.NR": {
     "ok": false,
     "source": "unavailable",
     "price": 0,
-    "updated_at": "2026-03-09T14:51:50.473588"
+    "updated_at": "2026-03-09T15:06:56.637401"
   },
   "CIC.NR": {
     "ok": false,
     "source": "unavailable",
     "price": 0,
-    "updated_at": "2026-03-09T14:51:48.315827"
+    "updated_at": "2026-03-09T15:06:56.620893"
   },
   "TOTL.NR": {
     "ok": true,
     "source": "yfinance(TOTL)",
     "price": 40.19,
-    "updated_at": "2026-03-09T14:51:51.603359"
+    "updated_at": "2026-03-09T15:06:54.258903"
   },
   "BAMB.NR": {
     "ok": true,
     "source": "yfinance(BAMB)",
     "price": 26.49,
-    "updated_at": "2026-03-09T14:51:53.374924"
+    "updated_at": "2026-03-09T15:07:04.297256"
   },
   "KENOL.NR": {
     "ok": false,
     "source": "unavailable",
     "price": 0,
-    "updated_at": "2026-03-09T14:51:53.640048"
+    "updated_at": "2026-03-09T15:07:01.579632"
   },
   "ARM.NR": {
     "ok": true,
     "source": "yfinance(ARM)",
     "price": 114.38,
-    "updated_at": "2026-03-09T14:51:54.331171"
+    "updated_at": "2026-03-09T15:07:05.340685"
   },
   "CABL.NR": {
     "ok": false,
     "source": "unavailable",
     "price": 0,
-    "updated_at": "2026-03-09T14:51:59.494813"
+    "updated_at": "2026-03-09T15:07:09.732756"
   },
   "BERG.NR": {
     "ok": false,
     "source": "unavailable",
     "price": 0,
-    "updated_at": "2026-03-09T14:52:03.449951"
+    "updated_at": "2026-03-09T15:07:21.219141"
   },
   "SASN.NR": {
     "ok": false,
     "source": "unavailable",
     "price": 0,
-    "updated_at": "2026-03-09T14:52:05.696666"
+    "updated_at": "2026-03-09T15:07:19.645678"
   },
   "KAPC.NR": {
     "ok": false,
     "source": "unavailable",
     "price": 0,
-    "updated_at": "2026-03-09T14:52:06.234617"
+    "updated_at": "2026-03-09T15:07:21.240677"
   },
   "LIMT.NR": {
     "ok": false,
     "source": "unavailable",
     "price": 0,
-    "updated_at": "2026-03-09T14:52:08.465428"
+    "updated_at": "2026-03-09T15:07:23.922779"
   },
   "TPSE.NR": {
     "ok": false,
     "source": "unavailable",
     "price": 0,
-    "updated_at": "2026-03-09T14:52:11.968641"
+    "updated_at": "2026-03-09T15:07:23.197801"
   },
   "CTUM.NR": {
     "ok": false,
     "source": "unavailable",
     "price": 0,
-    "updated_at": "2026-03-09T14:52:15.141875"
+    "updated_at": "2026-03-09T15:07:30.495416"
   },
   "NSE.NR": {
     "ok": false,
     "source": "unavailable",
     "price": 0,
-    "updated_at": "2026-03-09T14:52:17.338042"
+    "updated_at": "2026-03-09T15:07:31.692688"
   }
 }
