@@ -26,8 +26,8 @@
   "LIMT": {
     "ok": true,
     "source": "nse_scraper",
-    "price": 550.71,
-    "updated_at": "2026-03-09T15:20:53.979276"
+    "price": 550.82,
+    "updated_at": "2026-03-09T15:27:02.999837"
   },
   "BAT": {
     "ok": true,
@@ -39,13 +39,13 @@
     "ok": true,
     "source": "nse_scraper",
     "price": 18.2,
-    "updated_at": "2026-03-09T15:26:47.420379"
+    "updated_at": "2026-03-09T15:26:50.019107"
   },
   "KAPC": {
     "ok": true,
     "source": "nse_scraper",
-    "price": 110.99,
-    "updated_at": "2026-03-09T15:20:52.589936"
+    "price": 110.56,
+    "updated_at": "2026-03-09T15:26:56.527826"
   },
   "TPSE": {
     "ok": false,
@@ -69,7 +69,7 @@
     "ok": false,
     "source": "stub",
     "price": 0,
-    "updated_at": "2026-03-09T15:21:04.620490"
+    "updated_at": "2026-03-09T15:27:02.530537"
   },
   "NSE": {
     "ok": true,
