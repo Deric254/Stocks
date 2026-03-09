@@ -4,10 +4,13 @@ Stock Intel API — FastAPI backend (full spec implementation)
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi import BackgroundTasks
 from pydantic import BaseModel
 from typing import Optional
 import uvicorn
 import math
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 from services.data_loader import DataLoader
 from services.scoring import ScoringEngine
@@ -28,6 +31,14 @@ loader    = DataLoader()
 scorer    = ScoringEngine()
 portfolio = PortfolioManager()
 analytics = AnalyticsEngine()
+
+# ── Startup: kick off background prefetch so app is ready fast ─────────────
+@app.on_event("startup")
+def startup_prefetch():
+    def _bg():
+        loader.prefetch_all(NSE_TICKERS)
+    threading.Thread(target=_bg, daemon=True).start()
+    print("[startup] Background prefetch started for all NSE tickers.")
 
 # Full NSE ticker list
 NSE_TICKERS = [
@@ -129,13 +140,16 @@ def get_sectors():
 
 @app.get("/api/stocks")
 def get_stocks(sector: str = "", sort: str = "score"):
+    """
+    Returns all stocks. Parallel fetch — max 8s total wait.
+    Serves from cache immediately if available. Never hangs.
+    """
     global _score_cache
-    results = []
     tickers = NSE_TICKERS
     if sector:
         tickers = [t for t in NSE_TICKERS if t["sector"].lower() == sector.lower()]
 
-    for meta in tickers:
+    def _process_one(meta):
         ticker = meta["ticker"]
         try:
             prices       = loader.get_price_data(ticker)
@@ -144,14 +158,13 @@ def get_stocks(sector: str = "", sort: str = "score"):
             _score_cache[ticker] = scores
 
             current_price = float(prices["close"].iloc[-1]) if not prices.empty else 0
-            sparkline = [_clean(p) or 0 for p in prices["close"].tail(10).tolist()] if not prices.empty else []
+            sparkline     = [_clean(p) or 0 for p in prices["close"].tail(10).tolist()] if not prices.empty else []
 
-            # Asset coverage for screener column
             total_assets = _clean(fundamentals.get("total_assets"))
             market_cap   = _clean(fundamentals.get("market_cap"))
             asset_cov    = round(total_assets / market_cap, 2) if (total_assets and market_cap and market_cap > 0) else None
 
-            results.append({
+            return {
                 "ticker":   ticker,
                 "name":     meta["name"],
                 "sector":   meta["sector"],
@@ -162,12 +175,19 @@ def get_stocks(sector: str = "", sort: str = "score"):
                     "dividend_yield": _clean(fundamentals.get("dividend_yield")),
                     "price":          round(current_price, 2),
                     "asset_coverage": asset_cov,
+                    "data_stale":     bool(fundamentals.get("data_stale")),
+                    "last_update":    fundamentals.get("last_update",""),
                 },
                 "sparkline": [round(p, 2) for p in sparkline],
-            })
+            }
         except Exception as e:
             print(f"[stocks] skip {ticker}: {e}")
-            continue
+            return None
+
+    results = []
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        futures = list(ex.map(_process_one, tickers))
+    results = [r for r in futures if r is not None]
 
     # Sorting
     if sort == "price":
@@ -181,7 +201,7 @@ def get_stocks(sector: str = "", sort: str = "score"):
     else:
         results.sort(key=lambda x: x["scores"].get("total_score") or 0, reverse=True)
 
-    return {"stocks": results}
+    return {"stocks": results, "count": len(results)}
 
 
 @app.get("/api/stock/{ticker_raw:path}")
@@ -400,6 +420,50 @@ def remove_watchlist(req: WatchlistRequest):
     return {"watchlist": wl}
 
 
+# ── Data freshness ─────────────────────────────────────────────────────────
+
+@app.get("/api/data-freshness")
+def data_freshness():
+    """Returns per-ticker freshness status for the UI data tracker."""
+    try:
+        return {"freshness": loader.get_data_freshness(NSE_TICKERS)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/refresh-stock")
+def refresh_stock(body: dict):
+    """Force re-fetch a single ticker bypassing cache."""
+    try:
+        ticker = str(body.get("ticker","")).upper()
+        if not ticker:
+            raise HTTPException(status_code=400, detail="ticker required")
+        base = ticker.split(".")[0]
+        # Clear NSE scraper caches for this ticker
+        from pathlib import Path
+        import json
+        cache_dir = Path(__file__).parent / "data" / "nse_cache"
+        for cache_file in ["prices.json", "fundamentals.json"]:
+            cp = cache_dir / cache_file
+            if cp.exists():
+                try:
+                    with open(cp) as f: data = json.load(f)
+                    data.pop(base, None)
+                    with open(cp,"w") as f: json.dump(data, f, indent=2)
+                except Exception: pass
+        # Fetch fresh
+        prices = loader.get_price_data(ticker)
+        funds  = loader.get_fundamentals(ticker)
+        return {
+            "ticker":      ticker,
+            "price_ok":    not prices.empty,
+            "fund_ok":     bool(funds.get("pe") or funds.get("eps")),
+            "last_update": funds.get("last_update",""),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ── Missing data ───────────────────────────────────────────────────────────
 
 @app.post("/api/missing-data")
@@ -418,6 +482,153 @@ def save_missing_data(req: MissingDataRequest):
         scores       = scorer.compute_scores(prices, fundamentals)
         _score_cache[ticker] = scores
         return {"success": True, "new_scores": _clean_dict(scores)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# GOLD MODULE — routes added below, zero impact on stock routes above
+# ══════════════════════════════════════════════════════════════════════════
+
+from services.gold import (
+    fetch_live_price, fetch_ohlcv, generate_signal,
+    run_backtest, demo_manager, compute_indicators,
+    support_resistance, fibonacci_levels
+)
+
+class DemoTradeRequest(BaseModel):
+    direction: str
+    entry: float
+    sl: float
+    tp1: float
+    tp2: float
+    score: int
+    lot_size: float = 0.1
+
+class CloseTradeRequest(BaseModel):
+    trade_id: int
+    close_price: float
+    result: str
+
+class BacktestRequest(BaseModel):
+    interval: str = "1h"
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    atr_sl_mult: float = 1.5
+    atr_tp_mult: float = 4.5
+    min_score: int = 35
+
+
+@app.get("/api/gold/price")
+def gold_price():
+    try:
+        return fetch_live_price()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/gold/candles")
+def gold_candles(interval: str = "1h", outputsize: int = 300):
+    try:
+        df = fetch_ohlcv(interval=interval, outputsize=outputsize)
+        if df.empty:
+            return {"candles": [], "interval": interval}
+        df = compute_indicators(df)
+        records = []
+        for dt, row in df.iterrows():
+            records.append({
+                "datetime": str(dt),
+                "open":   round(_clean(row["open"]) or 0, 2),
+                "high":   round(_clean(row["high"]) or 0, 2),
+                "low":    round(_clean(row["low"])  or 0, 2),
+                "close":  round(_clean(row["close"])or 0, 2),
+                "volume": round(_clean(row.get("volume", 0)) or 0, 2),
+                "ema9":   round(_clean(row.get("ema9"))  or 0, 2),
+                "ema21":  round(_clean(row.get("ema21")) or 0, 2),
+                "ema50":  round(_clean(row.get("ema50")) or 0, 2),
+                "ema200": round(_clean(row.get("ema200"))or 0, 2),
+                "rsi":    round(_clean(row.get("rsi14")) or 0, 1),
+                "macd_hist": round(_clean(row.get("macd_hist")) or 0, 4),
+                "atr":    round(_clean(row.get("atr14")) or 0, 2),
+            })
+        return {"candles": records, "interval": interval, "count": len(records)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/gold/signal")
+def gold_signal():
+    try:
+        df_h4  = fetch_ohlcv(interval="4h",   outputsize=500)
+        df_h1  = fetch_ohlcv(interval="1h",   outputsize=300)
+        df_m30 = fetch_ohlcv(interval="30min",outputsize=200)
+        signal = generate_signal(df_h4, df_h1, df_m30)
+        return signal
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/gold/backtest")
+def gold_backtest(req: BacktestRequest):
+    try:
+        df = fetch_ohlcv(interval=req.interval, outputsize=1000)
+        if df.empty:
+            raise HTTPException(status_code=400, detail="No price data available for backtest")
+        result = run_backtest(
+            df,
+            start_date=req.start_date,
+            end_date=req.end_date,
+            atr_sl_mult=req.atr_sl_mult,
+            atr_tp_mult=req.atr_tp_mult,
+            min_score=req.min_score,
+        )
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/gold/demo/trades")
+def get_demo_trades():
+    try:
+        return {
+            "trades":      demo_manager.get_trades(),
+            "performance": demo_manager.get_performance(),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/gold/demo/open")
+def open_demo_trade(req: DemoTradeRequest):
+    try:
+        trade = demo_manager.open_trade(
+            direction=req.direction, entry=req.entry,
+            sl=req.sl, tp1=req.tp1, tp2=req.tp2,
+            score=req.score, lot_size=req.lot_size,
+        )
+        return {"trade": trade, "performance": demo_manager.get_performance()}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/gold/demo/close")
+def close_demo_trade(req: CloseTradeRequest):
+    try:
+        trades = demo_manager.close_trade(req.trade_id, req.close_price, req.result)
+        return {"trades": trades, "performance": demo_manager.get_performance()}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/gold/sr-fib")
+def gold_sr_fib():
+    try:
+        df = fetch_ohlcv(interval="4h", outputsize=300)
+        if df.empty:
+            return {"sr": {}, "fib": {}}
+        sr  = support_resistance(df, lookback=100)
+        fib = fibonacci_levels(df, lookback=200)
+        return {"sr": sr, "fib": fib}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

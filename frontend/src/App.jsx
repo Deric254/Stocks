@@ -946,6 +946,667 @@ function Watchlist({stocks,watchlist,onSelect,onTrade}){
   );
 }
 
+
+// ── Data Freshness Screen ───────────────────────────────────────────────────
+function DataFreshness({onToast}){
+  const [data, setData]       = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState({});
+
+  const load = () => {
+    setLoading(true);
+    get("/api/data-freshness")
+      .then(d => { setData(d.freshness||[]); setLoading(false); })
+      .catch(()=>setLoading(false));
+  };
+
+  useEffect(()=>{ load(); const iv=setInterval(load,30000); return()=>clearInterval(iv); },[]);
+
+  const forceRefresh = async (ticker) => {
+    setRefreshing(r=>({...r,[ticker]:true}));
+    try{
+      const r = await post("/api/refresh-stock",{ticker});
+      onToast(`${ticker} refreshed — price:${r.price_ok?"✅":"❌"} fund:${r.fund_ok?"✅":"❌"}`,"info");
+      load();
+    }catch(e){ onToast("Refresh failed","error"); }
+    setRefreshing(r=>({...r,[ticker]:false}));
+  };
+
+  const summary = {
+    live:    data.filter(d=>d.freshness==="live").length,
+    today:   data.filter(d=>d.freshness==="today").length,
+    stale:   data.filter(d=>d.freshness==="stale").length,
+    no_data: data.filter(d=>d.freshness==="no_data").length,
+  };
+
+  const cardStyle = {background:C.surface,border:"1px solid "+C.borderGray,borderRadius:13,padding:20,boxShadow:"0 2px 12px #0000000A"};
+
+  return(
+    <div>
+      {/* Summary row */}
+      <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:14,marginBottom:20}}>
+        {[
+          {l:"Live (< 4h)",    v:summary.live,    c:"#49A078", tb:"#49A078"},
+          {l:"Today (< 24h)",  v:summary.today,   c:"#86efac", tb:"#86efac"},
+          {l:"Stale (< 7d)",   v:summary.stale,   c:"#facc15", tb:"#facc15"},
+          {l:"No Data",        v:summary.no_data, c:"#ef4444", tb:"#ef4444"},
+        ].map(({l,v,c,tb})=>(
+          <div key={l} style={{...cardStyle,borderTop:"3px solid "+tb}}>
+            <div style={{fontSize:10,color:C.muted,fontWeight:600,textTransform:"uppercase",marginBottom:3}}>{l}</div>
+            <div style={{fontSize:28,fontWeight:900,color:c}}>{v}</div>
+            <div style={{fontSize:10,color:C.muted}}>stocks</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Explanation */}
+      <div style={{...cardStyle,marginBottom:20,background:"#fffbeb",border:"1px solid #fde68a"}}>
+        <div style={{fontSize:12,color:"#92400e",lineHeight:1.7}}>
+          <strong>ℹ️ How data works:</strong> Stock prices are fetched from Yahoo Finance and cached for 4 hours.
+          Fundamentals (PE, ROE, earnings etc.) are cached for 24 hours. Stale data up to 7 days old is still served
+          rather than leaving the screen empty. For NSE stocks Yahoo Finance coverage is limited — use the
+          <strong> Manual Entry</strong> tab on any stock detail to fill missing fundamentals from company annual reports.
+          Click <strong>↻ Force Refresh</strong> to bypass cache and fetch fresh data immediately.
+        </div>
+      </div>
+
+      {/* Table */}
+      <div style={cardStyle}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
+          <div style={{fontSize:13,fontWeight:700,color:C.text}}>Per-Stock Data Status ({data.length} stocks)</div>
+          <button onClick={load} style={{padding:"7px 16px",borderRadius:8,border:"1px solid "+C.borderGray,background:"transparent",color:C.muted,fontSize:12,cursor:"pointer",fontFamily:"inherit"}}>↻ Refresh All Status</button>
+        </div>
+        {loading?<Loader text="Loading freshness data…"/>:(
+          <div style={{overflowX:"auto"}}>
+            <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+              <thead>
+                <tr style={{background:C.greenBg,borderBottom:"2px solid "+C.border}}>
+                  {["Stock","Sector","Price","Source","Price Age","Fund Age","Status","Action"].map(h=>(
+                    <th key={h} style={{padding:"9px 12px",textAlign:"left",fontSize:10,color:C.muted,fontWeight:700,textTransform:"uppercase",whiteSpace:"nowrap"}}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {data.map(d=>(
+                  <tr key={d.ticker} style={{borderBottom:"1px solid "+C.borderGray}}>
+                    <td style={{padding:"9px 12px"}}>
+                      <div style={{fontWeight:700,color:C.text,fontSize:13}}>{d.ticker}</div>
+                      <div style={{fontSize:10,color:C.muted}}>{d.name}</div>
+                    </td>
+                    <td style={{padding:"9px 12px",fontSize:11,color:C.muted}}>{d.sector}</td>
+                    <td style={{padding:"9px 12px",fontWeight:700,color:d.price>0?C.text:C.red}}>
+                      {d.price>0?"KES "+d.price.toLocaleString():"—"}
+                    </td>
+                    <td style={{padding:"9px 12px",fontSize:11,color:C.muted,maxWidth:120,overflow:"hidden",textOverflow:"ellipsis"}}>{d.source||"—"}</td>
+                    <td style={{padding:"9px 12px"}}>
+                      <span style={{fontSize:11,color:d.price_age_h<4?C.green:d.price_age_h<24?"#92400e":C.red,fontWeight:600}}>
+                        {d.price_age_h>=9990?"never":d.price_age_h<1?(d.price_age_h*60).toFixed(0)+"m":d.price_age_h.toFixed(1)+"h"}
+                      </span>
+                    </td>
+                    <td style={{padding:"9px 12px"}}>
+                      <span style={{fontSize:11,color:d.fund_age_h<24?C.green:d.fund_age_h<168?"#92400e":C.red,fontWeight:600}}>
+                        {d.fund_age_h>=9990?"never":d.fund_age_h<1?(d.fund_age_h*60).toFixed(0)+"m":d.fund_age_h.toFixed(1)+"h"}
+                      </span>
+                    </td>
+                    <td style={{padding:"9px 12px"}}>
+                      <span style={{display:"inline-block",padding:"3px 10px",borderRadius:12,background:d.color+"22",border:"1px solid "+d.color,color:d.color,fontWeight:700,fontSize:10,textTransform:"uppercase"}}>
+                        {d.freshness==="live"?"🟢 Live":d.freshness==="today"?"🟡 Today":d.freshness==="stale"?"🟠 Stale":"🔴 No Data"}
+                      </span>
+                    </td>
+                    <td style={{padding:"9px 12px"}}>
+                      <button
+                        onClick={()=>forceRefresh(d.ticker)}
+                        disabled={!!refreshing[d.ticker]}
+                        style={{padding:"5px 12px",borderRadius:7,border:"1.5px solid "+C.green,background:"transparent",color:C.green,fontWeight:700,fontSize:11,cursor:refreshing[d.ticker]?"not-allowed":"pointer",opacity:refreshing[d.ticker]?0.5:1,fontFamily:"inherit"}}>
+                        {refreshing[d.ticker]?"⏳":"↻ Refresh"}
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// GOLD TRADING MODULE
+// ══════════════════════════════════════════════════════════════════════════
+
+const GOLD_C = {
+  gold:    "#f59e0b", goldLt: "#fef3c7", goldDk: "#d97706",
+  bull:    "#49A078", bullLt: "#d1fae5",
+  bear:    "#ef4444", bearLt: "#fee2e2",
+  wait:    "#6b7280", waitLt: "#f3f4f6",
+};
+
+function QualityBadge({quality, color, score}){
+  return(
+    <span style={{display:"inline-flex",alignItems:"center",gap:6,padding:"4px 14px",borderRadius:20,
+      background:color+"22",border:"1.5px solid "+color,color:color,fontWeight:800,fontSize:13}}>
+      {quality} <span style={{fontSize:11,opacity:0.8}}>({score}/100)</span>
+    </span>
+  );
+}
+
+function DirectionBadge({direction}){
+  const col = direction==="BUY"?GOLD_C.bull:direction==="SELL"?GOLD_C.bear:GOLD_C.wait;
+  const bg  = direction==="BUY"?GOLD_C.bullLt:direction==="SELL"?GOLD_C.bearLt:GOLD_C.waitLt;
+  const icon= direction==="BUY"?"▲ BUY":direction==="SELL"?"▼ SELL":"◆ WAIT";
+  return(
+    <span style={{display:"inline-block",padding:"6px 20px",borderRadius:8,background:bg,
+      border:"2px solid "+col,color:col,fontWeight:900,fontSize:16,letterSpacing:"0.05em"}}>{icon}</span>
+  );
+}
+
+function GoldPriceChart({candles=[], height=220}){
+  if(candles.length < 2) return <div style={{height,display:"flex",alignItems:"center",justifyContent:"center",color:C.muted,fontSize:13}}>Loading chart…</div>;
+  const closes = candles.map(c=>c.close);
+  const mn=Math.min(...closes), mx=Math.max(...closes), rng=mx-mn||1;
+  const pts=candles.map((c,i)=>`${(i/(candles.length-1))*100},${100-((c.close-mn)/rng)*88-4}`).join(" ");
+  const last=closes[closes.length-1], first=closes[0];
+  const up=last>=first, col=up?GOLD_C.bull:GOLD_C.bear;
+  const ema9pts  = candles.filter(c=>c.ema9).map((c,i)=>`${(i/(candles.length-1))*100},${100-((c.ema9-mn)/rng)*88-4}`).join(" ");
+  const ema21pts = candles.filter(c=>c.ema21).map((c,i)=>`${(i/(candles.length-1))*100},${100-((c.ema21-mn)/rng)*88-4}`).join(" ");
+  return(
+    <div style={{position:"relative"}}>
+      <div style={{display:"flex",justifyContent:"space-between",fontSize:10,color:C.muted,marginBottom:4}}>
+        <span>${mn.toFixed(2)}</span>
+        <span style={{color:GOLD_C.gold,fontWeight:700}}>XAUUSD</span>
+        <span>${mx.toFixed(2)}</span>
+      </div>
+      <svg viewBox="0 0 100 100" style={{width:"100%",height}} preserveAspectRatio="none">
+        <defs>
+          <linearGradient id="gcg" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor={col} stopOpacity="0.25"/>
+            <stop offset="100%" stopColor={col} stopOpacity="0"/>
+          </linearGradient>
+        </defs>
+        <polygon points={`${pts} 100,100 0,100`} fill="url(#gcg)"/>
+        <polyline points={pts} fill="none" stroke={col} strokeWidth="1.2" strokeLinejoin="round"/>
+        {ema9pts&&<polyline points={ema9pts} fill="none" stroke="#3b82f6" strokeWidth="0.6" strokeDasharray="2,1"/>}
+        {ema21pts&&<polyline points={ema21pts} fill="none" stroke="#f59e0b" strokeWidth="0.6" strokeDasharray="2,1"/>}
+      </svg>
+      <div style={{display:"flex",gap:14,fontSize:10,marginTop:4}}>
+        <span style={{color:"#3b82f6"}}>— EMA9</span>
+        <span style={{color:GOLD_C.gold}}>— EMA21</span>
+      </div>
+    </div>
+  );
+}
+
+function BacktestChart({equity=[],height=180}){
+  if(equity.length<2)return null;
+  const vals=equity.map(e=>e.value);
+  const mn=Math.min(...vals),mx=Math.max(...vals),rng=mx-mn||1;
+  const pts=equity.map((e,i)=>`${(i/(equity.length-1))*100},${100-((e.value-mn)/rng)*88-4}`).join(" ");
+  const up=vals[vals.length-1]>=vals[0];
+  const col=up?GOLD_C.bull:GOLD_C.bear;
+  return(
+    <svg viewBox="0 0 100 100" style={{width:"100%",height}} preserveAspectRatio="none">
+      <defs><linearGradient id="btg" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={col} stopOpacity="0.2"/><stop offset="100%" stopColor={col} stopOpacity="0"/></linearGradient></defs>
+      <polygon points={`${pts} 100,100 0,100`} fill="url(#btg)"/>
+      <polyline points={pts} fill="none" stroke={col} strokeWidth="1.5" strokeLinejoin="round"/>
+    </svg>
+  );
+}
+
+function GoldTrading({onToast}){
+  const [tab, setTab]         = useState("signal");
+  const [signal, setSignal]   = useState(null);
+  const [price, setPrice]     = useState(null);
+  const [candles, setCandles] = useState([]);
+  const [interval, setInterval] = useState("1h");
+  const [loading, setLoading] = useState(true);
+  const [sigLoading, setSigLoading] = useState(false);
+  const [demoData, setDemoData] = useState({trades:[],performance:{}});
+  const [btResult, setBtResult] = useState(null);
+  const [btRunning, setBtRunning] = useState(false);
+  const [btParams, setBtParams] = useState({
+    interval:"1h", start_date:"", end_date:"",
+    atr_sl_mult:1.5, atr_tp_mult:4.5, min_score:35
+  });
+  const [lotSize, setLotSize] = useState("0.1");
+
+  // Live price ticker
+  useEffect(()=>{
+    const fetchPrice=()=>get("/api/gold/price").then(d=>setPrice(d)).catch(()=>{});
+    fetchPrice();
+    const iv=setInterval(fetchPrice,15000);
+    return()=>clearInterval(iv);
+  },[]);
+
+  // Load candles
+  useEffect(()=>{
+    setLoading(true);
+    get(`/api/gold/candles?interval=${interval}&outputsize=200`)
+      .then(d=>{setCandles(d.candles||[]);setLoading(false);})
+      .catch(()=>setLoading(false));
+  },[interval]);
+
+  // Load signal
+  const refreshSignal=()=>{
+    setSigLoading(true);
+    get("/api/gold/signal").then(d=>{setSignal(d);setSigLoading(false);}).catch(()=>setSigLoading(false));
+  };
+  useEffect(()=>{
+    refreshSignal();
+    const iv=setInterval(refreshSignal,60000);
+    return()=>clearInterval(iv);
+  },[]);
+
+  // Load demo trades
+  useEffect(()=>{
+    if(tab==="demo") get("/api/gold/demo/trades").then(setDemoData).catch(()=>{});
+  },[tab]);
+
+  const openDemoTrade=async()=>{
+    if(!signal||!signal.entry)return;
+    try{
+      const r=await post("/api/gold/demo/open",{
+        direction:signal.direction, entry:signal.entry,
+        sl:signal.sl, tp1:signal.tp1, tp2:signal.tp2,
+        score:signal.score, lot_size:parseFloat(lotSize)||0.1,
+      });
+      setDemoData(r);
+      onToast("Demo trade opened — "+signal.direction+" @ $"+signal.entry,"success");
+    }catch(e){onToast("Failed to open trade","error");}
+  };
+
+  const closeDemoTrade=async(id,result)=>{
+    const cp=price?.price||signal?.price||0;
+    try{
+      const r=await post("/api/gold/demo/close",{trade_id:id,close_price:cp,result});
+      setDemoData(r);
+      onToast("Trade closed — "+result,"info");
+    }catch(e){onToast("Failed to close trade","error");}
+  };
+
+  const runBacktest=async()=>{
+    setBtRunning(true); setBtResult(null);
+    try{
+      const r=await post("/api/gold/backtest",btParams);
+      setBtResult(r);
+      if(r.error) onToast(r.error,"error");
+    }catch(e){onToast("Backtest failed","error");}
+    setBtRunning(false);
+  };
+
+  const setBtp=(k,v)=>setBtParams(p=>({...p,[k]:v}));
+  const inp={background:"#f9fafb",border:"1px solid "+C.borderGray,borderRadius:8,padding:"8px 11px",fontSize:13,color:C.text,outline:"none",fontFamily:"inherit",width:"100%",boxSizing:"border-box"};
+  const cardStyle={background:C.surface,border:"1px solid "+C.borderGray,borderRadius:13,padding:20,boxShadow:"0 2px 12px #0000000A"};
+
+  return(
+    <div>
+      {/* Live price header */}
+      <div style={{...cardStyle,marginBottom:18,borderTop:"4px solid "+GOLD_C.gold}}>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:12}}>
+          <div style={{display:"flex",alignItems:"center",gap:20}}>
+            <div>
+              <div style={{fontSize:11,color:C.muted,fontWeight:600,textTransform:"uppercase",letterSpacing:"0.1em"}}>XAUUSD Live Price</div>
+              <div style={{fontSize:36,fontWeight:900,color:GOLD_C.gold}}>
+                {price?.price?`$${Number(price.price).toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2})}`:"Fetching…"}
+              </div>
+              <div style={{fontSize:11,color:C.muted,marginTop:2}}>Source: {price?.source||"—"} · {price?.time?new Date(price.time).toLocaleTimeString():"—"}</div>
+            </div>
+            {signal&&signal.direction!=="WAIT"&&(
+              <div style={{borderLeft:"2px solid "+C.borderGray,paddingLeft:20}}>
+                <DirectionBadge direction={signal.direction}/>
+                <div style={{marginTop:8}}>
+                  <QualityBadge quality={signal.quality} color={signal.quality_color} score={signal.score}/>
+                </div>
+              </div>
+            )}
+          </div>
+          <div style={{display:"flex",gap:8}}>
+            {["15min","30min","1h","4h","1day"].map(tf=>(
+              <button key={tf} onClick={()=>setInterval(tf)} style={{padding:"6px 12px",borderRadius:7,border:"1.5px solid",borderColor:interval===tf?GOLD_C.gold:C.borderGray,background:interval===tf?GOLD_C.goldLt:"transparent",color:interval===tf?GOLD_C.goldDk:C.muted,fontWeight:700,fontSize:11,cursor:"pointer",fontFamily:"inherit"}}>{tf}</button>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* Tabs */}
+      <div style={{display:"flex",gap:6,marginBottom:18}}>
+        {[{id:"signal",l:"📡 Signal"},{id:"chart",l:"📈 Chart"},{id:"backtest",l:"🔬 Backtest"},{id:"demo",l:"🎮 Demo Trades"}].map(t=>(
+          <button key={t.id} onClick={()=>setTab(t.id)} style={{padding:"9px 20px",borderRadius:9,border:"2px solid",borderColor:tab===t.id?GOLD_C.gold:C.borderGray,background:tab===t.id?GOLD_C.goldLt:"transparent",color:tab===t.id?GOLD_C.goldDk:C.muted,fontWeight:700,fontSize:13,cursor:"pointer",fontFamily:"inherit"}}>{t.l}</button>
+        ))}
+      </div>
+
+      {/* ── SIGNAL TAB ── */}
+      {tab==="signal"&&(
+        <div>
+          {sigLoading&&!signal&&<Loader text="Analysing market…"/>}
+          {signal&&(
+            <div style={{display:"grid",gridTemplateColumns:"1.4fr 1fr",gap:18}}>
+              {/* Main signal card */}
+              <div style={{...cardStyle,borderTop:"4px solid "+(signal.direction==="BUY"?GOLD_C.bull:signal.direction==="SELL"?GOLD_C.bear:GOLD_C.wait)}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:16}}>
+                  <div>
+                    <div style={{fontSize:11,color:C.muted,textTransform:"uppercase",letterSpacing:"0.1em",fontWeight:600,marginBottom:6}}>Current Signal</div>
+                    <DirectionBadge direction={signal.direction}/>
+                  </div>
+                  <div style={{textAlign:"right"}}>
+                    <QualityBadge quality={signal.quality||"—"} color={signal.quality_color||C.muted} score={signal.score||0}/>
+                    <div style={{fontSize:10,color:C.muted,marginTop:4}}>Generated {signal.generated_at?new Date(signal.generated_at).toLocaleTimeString():"—"}</div>
+                  </div>
+                </div>
+
+                {signal.entry&&(
+                  <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:10,marginBottom:16}}>
+                    {[
+                      {l:"Entry",v:"$"+signal.entry,c:C.text},
+                      {l:"Stop Loss",v:"$"+signal.sl,c:GOLD_C.bear},
+                      {l:"TP1 (3:1)",v:"$"+signal.tp1,c:GOLD_C.bull},
+                      {l:"TP2 (5:1)",v:"$"+signal.tp2,c:GOLD_C.bull},
+                      {l:"Risk (SL dist)",v:"$"+signal.sl_pips,c:C.orange},
+                      {l:"R:R",v:signal.rr+"×",c:GOLD_C.gold},
+                    ].map(({l,v,c})=>(
+                      <div key={l} style={{background:C.greenBg,borderRadius:9,padding:"10px 12px",border:"1px solid "+C.border}}>
+                        <div style={{fontSize:10,color:C.muted,fontWeight:600,marginBottom:3}}>{l}</div>
+                        <div style={{fontSize:15,fontWeight:800,color:c}}>{v}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Reasons */}
+                <div style={{marginBottom:12}}>
+                  <div style={{fontSize:11,fontWeight:700,color:C.text,marginBottom:8}}>Why this signal fired:</div>
+                  {(signal.reasons||[]).map((r,i)=>(
+                    <div key={i} style={{fontSize:12,color:GOLD_C.bull,marginBottom:4,display:"flex",alignItems:"flex-start",gap:6}}>
+                      <span style={{flexShrink:0}}>✅</span>{r.replace(" ✅","")}
+                    </div>
+                  ))}
+                  {(signal.warnings||[]).map((w,i)=>(
+                    <div key={i} style={{fontSize:12,color:C.orange,marginBottom:4,display:"flex",alignItems:"flex-start",gap:6}}>
+                      <span style={{flexShrink:0}}>⚠️</span>{w.replace(" ⚠️","")}
+                    </div>
+                  ))}
+                  {!signal.reasons?.length&&!signal.warnings?.length&&(
+                    <div style={{fontSize:12,color:C.muted}}>No active signal — {signal.reason||"waiting for setup"}</div>
+                  )}
+                </div>
+
+                {/* ATR info */}
+                <div style={{fontSize:11,color:C.muted,borderTop:"1px solid "+C.borderGray,paddingTop:10}}>
+                  ATR(14): ${signal.atr} · Trend: {signal.trend==="bull"?"🟢 Bullish":signal.trend==="bear"?"🔴 Bearish":"⚪ Neutral"}
+                </div>
+
+                {/* Demo trade button */}
+                {signal.entry&&signal.score>=35&&(
+                  <div style={{marginTop:14,display:"flex",gap:10,alignItems:"center"}}>
+                    <input value={lotSize} onChange={e=>setLotSize(e.target.value)} type="number" step="0.01" min="0.01"
+                      placeholder="Lot size" style={{...inp,width:100}}/>
+                    <button onClick={openDemoTrade} style={{flex:1,padding:"10px 0",borderRadius:9,border:"none",
+                      background:signal.direction==="BUY"?"linear-gradient(135deg,"+GOLD_C.bull+",#3D8069)":"linear-gradient(135deg,"+GOLD_C.bear+",#b91c1c)",
+                      color:"#fff",fontWeight:800,fontSize:14,cursor:"pointer"}}>
+                      🎮 Open Demo {signal.direction}
+                    </button>
+                    <button onClick={refreshSignal} style={{padding:"10px 16px",borderRadius:9,border:"1px solid "+C.borderGray,background:"transparent",color:C.muted,fontSize:12,cursor:"pointer"}}>↻ Refresh</button>
+                  </div>
+                )}
+              </div>
+
+              {/* Indicator panel */}
+              <div style={{display:"flex",flexDirection:"column",gap:14}}>
+                {/* Indicators */}
+                <div style={cardStyle}>
+                  <div style={{fontSize:11,fontWeight:700,color:GOLD_C.gold,textTransform:"uppercase",letterSpacing:"0.1em",marginBottom:12}}>📊 Indicators</div>
+                  {signal.indicators&&Object.entries({
+                    "RSI(14)":      {v:signal.indicators.rsi,     good:v=>v>=40&&v<=60,  fmt:v=>v?.toFixed(1)},
+                    "MACD Hist":    {v:signal.indicators.macd_hist,good:v=>v!==0,          fmt:v=>v?.toFixed(4)},
+                    "EMA9":         {v:signal.indicators.ema9,    good:()=>true,           fmt:v=>"$"+v?.toFixed(2)},
+                    "EMA21":        {v:signal.indicators.ema21,   good:()=>true,           fmt:v=>"$"+v?.toFixed(2)},
+                    "EMA50(H4)":    {v:signal.indicators.ema50_h4, good:()=>true,          fmt:v=>"$"+v?.toFixed(2)},
+                    "EMA200(H4)":   {v:signal.indicators.ema200_h4,good:()=>true,          fmt:v=>"$"+v?.toFixed(2)},
+                  }).map(([name,{v,good,fmt}])=>(
+                    <div key={name} style={{display:"flex",justifyContent:"space-between",padding:"7px 0",borderBottom:"1px solid "+C.borderGray}}>
+                      <span style={{fontSize:12,color:C.muted}}>{name}</span>
+                      <span style={{fontSize:12,fontWeight:700,color:good(v)?GOLD_C.bull:C.text}}>{fmt(v)}</span>
+                    </div>
+                  ))}
+                </div>
+
+                {/* S&R levels */}
+                {signal.sr_levels&&(
+                  <div style={cardStyle}>
+                    <div style={{fontSize:11,fontWeight:700,color:GOLD_C.gold,textTransform:"uppercase",letterSpacing:"0.1em",marginBottom:10}}>🎯 Key Levels</div>
+                    <div style={{fontSize:11,color:GOLD_C.bear,fontWeight:600,marginBottom:4}}>Resistance</div>
+                    {(signal.sr_levels.resistance||[]).slice(0,3).map((l,i)=>(
+                      <div key={i} style={{fontSize:12,color:C.text,padding:"3px 0",borderBottom:"1px dashed "+C.borderGray}}>${l.toFixed(2)}</div>
+                    ))}
+                    <div style={{fontSize:11,color:GOLD_C.bull,fontWeight:600,marginTop:8,marginBottom:4}}>Support</div>
+                    {(signal.sr_levels.support||[]).slice(0,3).map((l,i)=>(
+                      <div key={i} style={{fontSize:12,color:C.text,padding:"3px 0",borderBottom:"1px dashed "+C.borderGray}}>${l.toFixed(2)}</div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Fibonacci */}
+                {signal.fib_levels&&(
+                  <div style={cardStyle}>
+                    <div style={{fontSize:11,fontWeight:700,color:GOLD_C.gold,textTransform:"uppercase",letterSpacing:"0.1em",marginBottom:10}}>🌀 Fibonacci</div>
+                    {["61%","50%","38%","23%"].map(k=>signal.fib_levels[k]&&(
+                      <div key={k} style={{display:"flex",justifyContent:"space-between",padding:"4px 0",borderBottom:"1px dashed "+C.borderGray}}>
+                        <span style={{fontSize:11,color:C.muted}}>{k}</span>
+                        <span style={{fontSize:12,fontWeight:700,color:C.text}}>${signal.fib_levels[k]?.toFixed(2)}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── CHART TAB ── */}
+      {tab==="chart"&&(
+        <div style={cardStyle}>
+          <div style={{fontSize:13,fontWeight:700,color:C.text,marginBottom:16}}>XAUUSD — {interval}</div>
+          {loading?<Loader text="Loading candles…"/>:<GoldPriceChart candles={candles.slice(-120)} height={380}/>}
+          <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:10,marginTop:16}}>
+            {candles.length>0&&[
+              {l:"Last Close",v:"$"+(candles[candles.length-1]?.close||0).toFixed(2),c:GOLD_C.gold},
+              {l:"RSI(14)",v:(candles[candles.length-1]?.rsi||0).toFixed(1),c:(candles[candles.length-1]?.rsi||50)>70?C.red:(candles[candles.length-1]?.rsi||50)<30?GOLD_C.bull:C.text},
+              {l:"ATR(14)",v:"$"+(candles[candles.length-1]?.atr||0).toFixed(2),c:C.text},
+              {l:"MACD Hist",v:(candles[candles.length-1]?.macd_hist||0).toFixed(4),c:(candles[candles.length-1]?.macd_hist||0)>0?GOLD_C.bull:GOLD_C.bear},
+            ].map(({l,v,c})=>(
+              <div key={l} style={{background:C.greenBg,borderRadius:9,padding:"10px 12px",border:"1px solid "+C.border}}>
+                <div style={{fontSize:10,color:C.muted,fontWeight:600}}>{l}</div>
+                <div style={{fontSize:16,fontWeight:800,color:c}}>{v}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ── BACKTEST TAB ── */}
+      {tab==="backtest"&&(
+        <div>
+          {/* Params */}
+          <div style={{...cardStyle,marginBottom:18}}>
+            <div style={{fontSize:13,fontWeight:700,color:C.text,marginBottom:14}}>🔬 Backtest Parameters</div>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:12,marginBottom:14}}>
+              <div>
+                <div style={{fontSize:10,color:C.muted,fontWeight:600,marginBottom:4,textTransform:"uppercase"}}>Timeframe</div>
+                <select value={btParams.interval} onChange={e=>setBtp("interval",e.target.value)} style={inp}>
+                  {["15min","30min","1h","4h","1day"].map(tf=><option key={tf} value={tf}>{tf}</option>)}
+                </select>
+              </div>
+              <div>
+                <div style={{fontSize:10,color:C.muted,fontWeight:600,marginBottom:4,textTransform:"uppercase"}}>Start Date</div>
+                <input type="date" value={btParams.start_date} onChange={e=>setBtp("start_date",e.target.value)} style={inp}/>
+              </div>
+              <div>
+                <div style={{fontSize:10,color:C.muted,fontWeight:600,marginBottom:4,textTransform:"uppercase"}}>End Date</div>
+                <input type="date" value={btParams.end_date} onChange={e=>setBtp("end_date",e.target.value)} style={inp}/>
+              </div>
+              <div>
+                <div style={{fontSize:10,color:C.muted,fontWeight:600,marginBottom:4,textTransform:"uppercase"}}>ATR SL Multiplier</div>
+                <input type="number" step="0.1" value={btParams.atr_sl_mult} onChange={e=>setBtp("atr_sl_mult",parseFloat(e.target.value))} style={inp}/>
+              </div>
+              <div>
+                <div style={{fontSize:10,color:C.muted,fontWeight:600,marginBottom:4,textTransform:"uppercase"}}>ATR TP Multiplier (3:1 = SL×3)</div>
+                <input type="number" step="0.1" value={btParams.atr_tp_mult} onChange={e=>setBtp("atr_tp_mult",parseFloat(e.target.value))} style={inp}/>
+              </div>
+              <div>
+                <div style={{fontSize:10,color:C.muted,fontWeight:600,marginBottom:4,textTransform:"uppercase"}}>Min Signal Score (0-100)</div>
+                <input type="number" step="5" min="0" max="100" value={btParams.min_score} onChange={e=>setBtp("min_score",parseInt(e.target.value))} style={inp}/>
+              </div>
+            </div>
+            <button onClick={runBacktest} disabled={btRunning} style={{width:"100%",padding:13,borderRadius:9,border:"none",
+              background:btRunning?"#d1d5db":"linear-gradient(135deg,"+GOLD_C.gold+","+GOLD_C.goldDk+")",
+              color:btRunning?C.muted:"#fff",fontWeight:800,fontSize:14,cursor:btRunning?"not-allowed":"pointer"}}>
+              {btRunning?"⏳ Running Backtest…":"▶ Run Backtest"}
+            </button>
+          </div>
+
+          {/* Results */}
+          {btResult&&!btResult.error&&(
+            <div>
+              {/* Stats */}
+              <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:14,marginBottom:18}}>
+                {[
+                  {l:"Total Trades",v:btResult.stats.total_trades,c:C.text,tb:C.borderGray},
+                  {l:"Win Rate",v:btResult.stats.win_rate+"%",c:btResult.stats.win_rate>=50?GOLD_C.bull:GOLD_C.bear,tb:btResult.stats.win_rate>=50?GOLD_C.bull:GOLD_C.bear},
+                  {l:"Profit Factor",v:btResult.stats.profit_factor,c:btResult.stats.profit_factor>=1.5?GOLD_C.bull:GOLD_C.bear,tb:btResult.stats.profit_factor>=1.5?GOLD_C.bull:GOLD_C.bear},
+                  {l:"Total Return",v:btResult.stats.return_pct+"%",c:btResult.stats.return_pct>=0?GOLD_C.bull:GOLD_C.bear,tb:btResult.stats.return_pct>=0?GOLD_C.bull:GOLD_C.bear},
+                  {l:"Wins",v:btResult.stats.wins,c:GOLD_C.bull,tb:GOLD_C.bull},
+                  {l:"Losses",v:btResult.stats.losses,c:GOLD_C.bear,tb:GOLD_C.bear},
+                  {l:"Max Drawdown",v:btResult.stats.max_drawdown+"%",c:btResult.stats.max_drawdown>20?GOLD_C.bear:C.orange,tb:C.orange},
+                  {l:"Final Balance",v:"$"+btResult.stats.final_balance.toLocaleString(),c:GOLD_C.gold,tb:GOLD_C.gold},
+                ].map(({l,v,c,tb})=>(
+                  <div key={l} style={{background:C.surface,border:"1px solid "+C.borderGray,borderRadius:11,padding:"12px 14px",borderTop:"3px solid "+tb}}>
+                    <div style={{fontSize:10,color:C.muted,fontWeight:600,marginBottom:3,textTransform:"uppercase"}}>{l}</div>
+                    <div style={{fontSize:18,fontWeight:800,color:c}}>{v}</div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Equity curve */}
+              <div style={{...cardStyle,marginBottom:18}}>
+                <div style={{fontSize:13,fontWeight:700,color:C.text,marginBottom:12}}>Equity Curve ($10,000 start)</div>
+                <BacktestChart equity={btResult.equity_curve} height={200}/>
+              </div>
+
+              {/* Trade log */}
+              <div style={cardStyle}>
+                <div style={{fontSize:13,fontWeight:700,color:C.text,marginBottom:12}}>Trade Log ({btResult.trades.length} trades)</div>
+                <div style={{overflowX:"auto"}}>
+                  <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+                    <thead>
+                      <tr style={{background:C.greenBg,borderBottom:"2px solid "+C.border}}>
+                        {["#","Dir","Entry","SL","TP1","Entry Date","Exit Date","Result","PnL","Score"].map(h=>(
+                          <th key={h} style={{padding:"8px 10px",textAlign:"left",fontSize:10,color:C.muted,fontWeight:700,textTransform:"uppercase",whiteSpace:"nowrap"}}>{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {btResult.trades.map((t,i)=>(
+                        <tr key={i} style={{borderBottom:"1px solid "+C.borderGray}}>
+                          <td style={{padding:"7px 10px",color:C.dim}}>{i+1}</td>
+                          <td style={{padding:"7px 10px",fontWeight:700,color:t.direction==="BUY"?GOLD_C.bull:GOLD_C.bear}}>{t.direction}</td>
+                          <td style={{padding:"7px 10px"}}>${t.entry}</td>
+                          <td style={{padding:"7px 10px",color:GOLD_C.bear}}>${t.sl}</td>
+                          <td style={{padding:"7px 10px",color:GOLD_C.bull}}>${t.tp1}</td>
+                          <td style={{padding:"7px 10px",color:C.muted,fontSize:11}}>{t.entry_date?.slice(0,10)}</td>
+                          <td style={{padding:"7px 10px",color:C.muted,fontSize:11}}>{t.exit_date?.slice(0,10)||"—"}</td>
+                          <td style={{padding:"7px 10px",fontWeight:700,color:t.result==="TP1"?GOLD_C.bull:t.result==="SL"?GOLD_C.bear:C.muted}}>{t.result||"—"}</td>
+                          <td style={{padding:"7px 10px",fontWeight:700,color:(t.pnl||0)>=0?GOLD_C.bull:GOLD_C.bear}}>{t.pnl!=null?((t.pnl>=0?"+":"")+"$"+t.pnl.toFixed(2)):"—"}</td>
+                          <td style={{padding:"7px 10px"}}><span style={{background:C.greenBg,borderRadius:4,padding:"2px 6px",fontSize:10,fontWeight:700}}>{t.score}</span></td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          )}
+          {btResult?.error&&<div style={{background:C.redLt,border:"1px solid "+C.red,borderRadius:10,padding:16,color:C.red,fontSize:13}}>{btResult.error}</div>}
+        </div>
+      )}
+
+      {/* ── DEMO TRADES TAB ── */}
+      {tab==="demo"&&(
+        <div>
+          {/* Performance */}
+          <div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:14,marginBottom:18}}>
+            {[
+              {l:"Total Trades",v:demoData.performance?.total_trades||0,c:C.text,tb:C.borderGray},
+              {l:"Wins",v:demoData.performance?.wins||0,c:GOLD_C.bull,tb:GOLD_C.bull},
+              {l:"Losses",v:demoData.performance?.losses||0,c:GOLD_C.bear,tb:GOLD_C.bear},
+              {l:"Win Rate",v:(demoData.performance?.win_rate||0)+"%",c:(demoData.performance?.win_rate||0)>=50?GOLD_C.bull:GOLD_C.bear,tb:(demoData.performance?.win_rate||0)>=50?GOLD_C.bull:GOLD_C.bear},
+              {l:"Total PnL",v:"$"+(demoData.performance?.total_pnl||0).toFixed(2),c:(demoData.performance?.total_pnl||0)>=0?GOLD_C.bull:GOLD_C.bear,tb:GOLD_C.gold},
+            ].map(({l,v,c,tb})=>(
+              <div key={l} style={{background:C.surface,border:"1px solid "+C.borderGray,borderRadius:11,padding:"12px 14px",borderTop:"3px solid "+tb}}>
+                <div style={{fontSize:10,color:C.muted,fontWeight:600,marginBottom:3,textTransform:"uppercase"}}>{l}</div>
+                <div style={{fontSize:18,fontWeight:800,color:c}}>{v}</div>
+              </div>
+            ))}
+          </div>
+
+          {/* Open trades */}
+          {(demoData.performance?.open_trades||[]).length>0&&(
+            <div style={{...cardStyle,marginBottom:18}}>
+              <div style={{fontSize:13,fontWeight:700,color:C.text,marginBottom:12}}>Open Demo Trades</div>
+              {(demoData.performance.open_trades||[]).map(t=>(
+                <div key={t.id} style={{display:"flex",alignItems:"center",gap:12,padding:"12px 0",borderBottom:"1px solid "+C.borderGray,flexWrap:"wrap"}}>
+                  <DirectionBadge direction={t.direction}/>
+                  <div style={{flex:1}}>
+                    <div style={{fontSize:13,fontWeight:700}}>Entry: ${t.entry} &nbsp;|&nbsp; SL: <span style={{color:GOLD_C.bear}}>${t.sl}</span> &nbsp;|&nbsp; TP1: <span style={{color:GOLD_C.bull}}>${t.tp1}</span></div>
+                    <div style={{fontSize:11,color:C.muted}}>{new Date(t.open_date).toLocaleString()} · Lot: {t.lot_size} · Score: {t.score}</div>
+                  </div>
+                  <div style={{display:"flex",gap:8}}>
+                    <button onClick={()=>closeDemoTrade(t.id,"TP1")} style={{padding:"7px 14px",borderRadius:7,border:"2px solid "+GOLD_C.bull,background:GOLD_C.bullLt,color:GOLD_C.bull,fontWeight:700,fontSize:12,cursor:"pointer"}}>✅ TP Hit</button>
+                    <button onClick={()=>closeDemoTrade(t.id,"SL")} style={{padding:"7px 14px",borderRadius:7,border:"2px solid "+GOLD_C.bear,background:GOLD_C.bearLt,color:GOLD_C.bear,fontWeight:700,fontSize:12,cursor:"pointer"}}>❌ SL Hit</button>
+                    <button onClick={()=>closeDemoTrade(t.id,"MANUAL")} style={{padding:"7px 14px",borderRadius:7,border:"1px solid "+C.borderGray,background:"transparent",color:C.muted,fontSize:12,cursor:"pointer"}}>Close</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Trade history */}
+          <div style={cardStyle}>
+            <div style={{fontSize:13,fontWeight:700,color:C.text,marginBottom:12}}>Trade History</div>
+            {!(demoData.trades||[]).filter(t=>t.status==="CLOSED").length?(
+              <div style={{color:C.muted,fontSize:13,padding:"24px 0",textAlign:"center"}}>No closed trades yet. Open a demo trade from the Signal tab.</div>
+            ):(
+              <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+                <thead>
+                  <tr style={{background:C.greenBg,borderBottom:"2px solid "+C.border}}>
+                    {["Dir","Entry","Close","Open Date","Result","PnL","Score"].map(h=>(
+                      <th key={h} style={{padding:"8px 12px",textAlign:"left",fontSize:10,color:C.muted,fontWeight:700,textTransform:"uppercase"}}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {(demoData.trades||[]).filter(t=>t.status==="CLOSED").reverse().map(t=>(
+                    <tr key={t.id} style={{borderBottom:"1px solid "+C.borderGray}}>
+                      <td style={{padding:"8px 12px",fontWeight:700,color:t.direction==="BUY"?GOLD_C.bull:GOLD_C.bear}}>{t.direction}</td>
+                      <td style={{padding:"8px 12px"}}>${t.entry}</td>
+                      <td style={{padding:"8px 12px"}}>${t.close_price}</td>
+                      <td style={{padding:"8px 12px",color:C.muted,fontSize:11}}>{new Date(t.open_date).toLocaleDateString()}</td>
+                      <td style={{padding:"8px 12px",fontWeight:700,color:t.result==="TP1"?GOLD_C.bull:GOLD_C.bear}}>{t.result}</td>
+                      <td style={{padding:"8px 12px",fontWeight:700,color:(t.pnl||0)>=0?GOLD_C.bull:GOLD_C.bear}}>{t.pnl!=null?((t.pnl>=0?"+":"")+"$"+t.pnl.toFixed(2)):"—"}</td>
+                      <td style={{padding:"8px 12px"}}><span style={{background:C.greenBg,borderRadius:4,padding:"2px 6px",fontSize:10,fontWeight:700}}>{t.score}</span></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ══════════════════════════════════════════════════════════════════════════
 // ROOT APP
 // ══════════════════════════════════════════════════════════════════════════
@@ -1014,8 +1675,10 @@ export default function App(){
     {id:"watchlist", icon:"★", l:"Watchlist"},
     {id:"portfolio", icon:"◈", l:"Portfolio"},
     {id:"analytics", icon:"≋", l:"Analytics"},
+    {id:"gold",      icon:"🥇", l:"Gold Trading"},
+    {id:"freshness",  icon:"📡", l:"Data Status"},
   ];
-  const titles={dashboard:"Dashboard",screener:"Stock Screener",watchlist:"Watchlist",portfolio:"My Portfolio",detail:"Stock Detail",analytics:"Analytics"};
+  const titles={dashboard:"Dashboard",screener:"Stock Screener",watchlist:"Watchlist",portfolio:"My Portfolio",detail:"Stock Detail",analytics:"Analytics",gold:"Gold Trading — XAUUSD",freshness:"NSE Data Status & Freshness"};
 
   return(
     <div style={{display:"flex",minHeight:"100vh",background:C.bg,fontFamily:"'Segoe UI','Inter',system-ui,sans-serif",color:C.text}}>
@@ -1082,6 +1745,8 @@ export default function App(){
           {page==="portfolio" && <Portfolio  portfolio={portfolio} onAdd={()=>setModal({ticker:"",type:"BUY"})} onTrade={openTrade} stocks={stocks}/>}
           {page==="analytics" && <Analytics  analytics={analytics} stocks={stocks}/>}
           {page==="detail"&&selected && <StockDetail ticker={selected} onBack={()=>setPage("screener")} onTrade={openTrade} tickers={tickers} onToast={showToast}/>}
+          {page==="gold"      && <GoldTrading onToast={showToast}/>}
+          {page==="freshness" && <DataFreshness onToast={showToast}/>}
         </div>
 
         {/* Footer */}

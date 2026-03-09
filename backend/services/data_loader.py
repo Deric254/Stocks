@@ -1,334 +1,240 @@
 """
-data_loader.py — Yahoo Finance fetcher with CSV caching.
-Enriches fundamentals with 5-year history arrays for the 60-point scorer.
+data_loader.py — NSE data loader using nse_scraper (NOT Yahoo Finance).
+
+Yahoo Finance does not cover NSE Kenya. This loader uses:
+  1. nse_scraper.py — real NSE website + African Markets sources
+  2. JSON-based cache (not CSV — more robust, no "No columns" errors)
+  3. Manual data entry overlay
+  4. Always returns something — never hangs
+
+Cache files (JSON, in backend/data/):
+  prices_cache.json      — {TICKER: {price, source, updated_at}}
+  fundamentals_cache.json — {TICKER: {pe, pb, roe, ...}}
+  watchlist.json
+  missing_data.json
+  fetch_status.json
 """
 
-import os
 import json
 import math
-import pandas as pd
-import yfinance as yf
-from datetime import datetime, timedelta
+import threading
+from datetime import datetime
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
+from typing import Optional
+import pandas as pd
 
-DATA_DIR         = Path(__file__).parent.parent / "data"
+from services.nse_scraper import (
+    get_price, get_all_prices, get_price_history,
+    get_fundamentals as scrape_fundamentals,
+    MANUAL_PRICE_STUBS,
+)
+
+DATA_DIR          = Path(__file__).parent.parent / "data"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-PRICES_CSV       = DATA_DIR / "prices_history.csv"
-FUNDAMENTALS_CSV = DATA_DIR / "fundamentals.csv"
-CONFIG_JSON      = DATA_DIR / "config.json"
-WATCHLIST_JSON   = DATA_DIR / "watchlist.json"
-MISSING_JSON     = DATA_DIR / "missing_data.json"
+WATCHLIST_JSON    = DATA_DIR / "watchlist.json"
+MISSING_JSON      = DATA_DIR / "missing_data.json"
+FETCH_STATUS_JSON = DATA_DIR / "fetch_status.json"
+CONFIG_JSON       = DATA_DIR / "config.json"
 
-PRICE_TTL_HOURS  = 4
-FUND_TTL_HOURS   = 24
+_lock = threading.Lock()
 
 
-def _load_config() -> dict:
-    if CONFIG_JSON.exists():
-        with open(CONFIG_JSON) as f:
-            return json.load(f)
-    default = {
-        "scoring_weights": {"daily": 0.4, "monthly": 0.3, "long_term": 0.3},
-        "api": {"yahoo_source": "yfinance"},
-        "ui": {"default_currency": "KES"},
-    }
-    with open(CONFIG_JSON, "w") as f:
-        json.dump(default, f, indent=2)
+def _load_json(path: Path, default):
+    if path.exists():
+        try:
+            with open(path) as f:
+                return json.load(f)
+        except Exception:
+            pass
     return default
 
+def _save_json(path: Path, data):
+    with _lock:
+        try:
+            with open(path, "w") as f:
+                json.dump(data, f, indent=2, default=str)
+        except Exception as e:
+            print(f"[DataLoader] save failed {path.name}: {e}")
 
 def _safe_float(val, default=None):
-    if val is None:
-        return default
+    if val is None: return default
     try:
         f = float(val)
         return default if (math.isnan(f) or math.isinf(f)) else f
-    except Exception:
-        return default
+    except: return default
+
+def _hours_old(ts_str) -> float:
+    try:
+        dt = datetime.fromisoformat(str(ts_str))
+        return (datetime.now() - dt).total_seconds() / 3600
+    except: return 9999.0
 
 
 class DataLoader:
     def __init__(self):
-        self.config = _load_config()
+        self.config = _load_json(CONFIG_JSON, {})
 
     # ------------------------------------------------------------------ #
     #  Price data                                                          #
     # ------------------------------------------------------------------ #
 
     def get_price_data(self, ticker: str, period: str = "2y") -> pd.DataFrame:
-        cached = self._read_price_cache(ticker)
-        if cached is not None:
-            return cached
-        df = self._fetch_prices_yfinance(ticker, period)
-        if not df.empty:
-            self._write_price_cache(ticker, df)
-        return df
-
-    def _fetch_prices_yfinance(self, ticker: str, period: str) -> pd.DataFrame:
+        """Returns OHLCV DataFrame. Uses NSE scraper, never Yahoo Finance."""
+        base = ticker.split(".")[0].upper()
         try:
-            obj = yf.Ticker(ticker)
-            df  = obj.history(period=period)
-            if df.empty:
-                return pd.DataFrame()
-            df.columns = [c.lower() for c in df.columns]
-            df = df[["open", "high", "low", "close", "volume"]]
-            df.index = pd.to_datetime(df.index).tz_localize(None)
-            return df
+            df = get_price_history(ticker, days=365)
+            if df is not None and not df.empty:
+                price = float(df["close"].iloc[-1]) if "close" in df.columns else 0
+                self._save_status(base, True, "nse_scraper", price)
+                return df
         except Exception as e:
-            print(f"[DataLoader] yfinance price fetch failed for {ticker}: {e}")
-            return pd.DataFrame()
+            print(f"[DataLoader] price history failed for {base}: {e}")
 
-    def _read_price_cache(self, ticker: str):
-        if not PRICES_CSV.exists():
-            return None
-        try:
-            df  = pd.read_csv(PRICES_CSV, parse_dates=["date"])
-            sub = df[df["ticker"] == ticker].copy()
-            if sub.empty:
-                return None
-            sub = sub.set_index("date").sort_index()
-            last_date = sub.index[-1]
-            age_hours = (datetime.now() - last_date).total_seconds() / 3600
-            if age_hours > PRICE_TTL_HOURS:
-                return None
-            return sub.drop(columns=["ticker"], errors="ignore")
-        except Exception:
-            return None
-
-    def _write_price_cache(self, ticker: str, df: pd.DataFrame):
-        try:
-            new = df.copy()
-            new["ticker"] = ticker
-            new = new.reset_index().rename(columns={"index": "date", "Date": "date"})
-            new["date"] = pd.to_datetime(new["date"]).dt.strftime("%Y-%m-%d")
-            if PRICES_CSV.exists():
-                existing = pd.read_csv(PRICES_CSV)
-                existing = existing[existing["ticker"] != ticker]
-                combined = pd.concat([existing, new], ignore_index=True)
-            else:
-                combined = new
-            combined.to_csv(PRICES_CSV, index=False)
-        except Exception as e:
-            print(f"[DataLoader] price cache write failed: {e}")
-
-    # ------------------------------------------------------------------ #
-    #  Fundamentals — enriched with 5-year history                        #
-    # ------------------------------------------------------------------ #
+        # Minimal single-row stub so rest of app works
+        p = get_price(ticker).get("price", 0)
+        self._save_status(base, False, "stub", p)
+        if p > 0:
+            idx = pd.DatetimeIndex([datetime.now()])
+            return pd.DataFrame({
+                "open":[p],"high":[p],"low":[p],"close":[p],"volume":[0]
+            }, index=idx)
+        return pd.DataFrame()
 
     def get_fundamentals(self, ticker: str) -> dict:
-        cached = self._read_fund_cache(ticker)
-        if cached:
-            return self._inject_missing_data(ticker, cached)
-        data = self._fetch_fundamentals_yfinance(ticker)
-        if data:
-            self._write_fund_cache(ticker, data)
-        return self._inject_missing_data(ticker, data)
-
-    def _fetch_fundamentals_yfinance(self, ticker: str) -> dict:
+        """Returns fundamentals dict, with manual overrides applied."""
+        base = ticker.split(".")[0].upper()
         try:
-            obj  = yf.Ticker(ticker)
-            info = obj.info or {}
-
-            price = _safe_float(info.get("currentPrice")) or _safe_float(info.get("regularMarketPrice"), 0)
-            eps   = _safe_float(info.get("trailingEps"))
-            bvps  = _safe_float(info.get("bookValue"))
-            pe    = round(price / eps, 2) if eps and eps > 0 else None
-            pb    = round(price / bvps, 2) if bvps and bvps > 0 else None
-
-            # Try to get 5-year income statement history
-            net_income_history = []
-            revenue_history    = []
-            dps_history        = []
-
-            try:
-                fin = obj.financials  # annual, columns = dates descending
-                if fin is not None and not fin.empty:
-                    ni_row  = fin.loc["Net Income"] if "Net Income" in fin.index else None
-                    rev_row = fin.loc["Total Revenue"] if "Total Revenue" in fin.index else None
-                    if ni_row is not None:
-                        net_income_history = [_safe_float(v, 0) for v in reversed(ni_row.values[:5])]
-                    if rev_row is not None:
-                        revenue_history    = [_safe_float(v, 0) for v in reversed(rev_row.values[:5])]
-            except Exception:
-                pass
-
-            try:
-                div_hist = obj.dividends
-                if div_hist is not None and not div_hist.empty:
-                    div_hist.index = pd.to_datetime(div_hist.index).tz_localize(None)
-                    # DPS by year (last 5 years)
-                    div_hist = div_hist.groupby(div_hist.index.year).sum()
-                    current_year = datetime.now().year
-                    for yr in range(current_year - 4, current_year + 1):
-                        dps_history.append(float(div_hist.get(yr, 0)))
-            except Exception:
-                pass
-
-            # Market cap and total assets for asset safety
-            market_cap   = _safe_float(info.get("marketCap"))
-            total_assets = _safe_float(info.get("totalAssets"))
-            total_debt   = _safe_float(info.get("totalDebt"), 0)
-
-            # Debt-to-equity
-            de = _safe_float(info.get("debtToEquity"))
-            if de is not None:
-                de = de / 100  # yfinance gives it as percentage
-
-            # Interest coverage: not directly in yfinance; use ebitda/interest estimate
-            ebitda = _safe_float(info.get("ebitda"))
-            interest_exp = None
-            try:
-                cf = obj.financials
-                if cf is not None and "Interest Expense" in cf.index:
-                    interest_exp = abs(_safe_float(cf.loc["Interest Expense"].iloc[0], 0))
-            except Exception:
-                pass
-            icr = (ebitda / interest_exp) if (ebitda and interest_exp and interest_exp > 0) else None
-
-            # Total dividends paid (latest year)
-            total_dividends = dps_history[-1] * _safe_float(info.get("sharesOutstanding"), 0) if dps_history else 0
-
-            net_income_latest = net_income_history[-1] if net_income_history else _safe_float(info.get("netIncomeToCommon"))
-
-            return {
-                "ticker":              ticker,
-                "eps":                 eps,
-                "bvps":                bvps,
-                "revenue":             _safe_float(info.get("totalRevenue")),
-                "debt":                total_debt,
-                "dividends":           _safe_float(info.get("dividendRate")),
-                "roe":                 _safe_float(info.get("returnOnEquity")),
-                "margin":              _safe_float(info.get("profitMargins")),
-                "pe":                  pe,
-                "pb":                  pb,
-                "dividend_yield":      _safe_float(info.get("dividendYield")),
-                "market_cap":          market_cap,
-                "total_assets":        total_assets,
-                "debt_to_equity":      de,
-                "interest_coverage":   icr,
-                "net_income":          net_income_latest,
-                "total_dividends":     total_dividends,
-                # 5-year history arrays for scoring
-                "net_income_history":  net_income_history,
-                "revenue_history":     revenue_history,
-                "dps_history":         dps_history,
-                "last_update":         datetime.now().strftime("%Y-%m-%d"),
-            }
+            fund = scrape_fundamentals(ticker)
+            if fund:
+                return self._inject_missing_data(base, fund)
         except Exception as e:
-            print(f"[DataLoader] fundamentals fetch failed for {ticker}: {e}")
-            return {}
+            print(f"[DataLoader] fundamentals failed for {base}: {e}")
+        return self._inject_missing_data(base, {
+            "ticker": ticker, "data_stale": True, "data_source": "none",
+            "eps": None, "bvps": None, "revenue": None, "debt": None,
+            "dividends": None, "roe": None, "margin": None,
+            "pe": None, "pb": None, "dividend_yield": None,
+            "market_cap": None, "total_assets": None,
+            "debt_to_equity": None, "interest_coverage": None,
+            "net_income": None, "total_dividends": None,
+            "net_income_history": [], "revenue_history": [], "dps_history": [],
+            "last_update": "never",
+        })
 
-    def _read_fund_cache(self, ticker: str):
-        if not FUNDAMENTALS_CSV.exists():
-            return None
-        try:
-            df  = pd.read_csv(FUNDAMENTALS_CSV)
-            row = df[df["ticker"] == ticker]
-            if row.empty:
-                return None
-            r    = row.iloc[0]
-            last = datetime.strptime(str(r.get("last_update", "2000-01-01")), "%Y-%m-%d")
-            age  = (datetime.now() - last).total_seconds() / 3600
-            if age > FUND_TTL_HOURS:
-                return None
-            d = r.to_dict()
-            # Restore list fields from JSON strings
-            for field in ("net_income_history", "revenue_history", "dps_history"):
-                v = d.get(field, "[]")
-                if isinstance(v, str):
-                    try:
-                        import json as _json
-                        d[field] = _json.loads(v)
-                    except Exception:
-                        d[field] = []
-            return d
-        except Exception:
-            return None
+    # ------------------------------------------------------------------ #
+    #  Bulk prefetch                                                       #
+    # ------------------------------------------------------------------ #
 
-    def _write_fund_cache(self, ticker: str, data: dict):
+    def prefetch_all(self, tickers: list):
+        """Parallel prefetch of all NSE tickers. Called at startup."""
+        # Bulk price fetch first (one HTTP call for all stocks)
+        print(f"[prefetch] Fetching all NSE prices in bulk…")
         try:
-            import json as _json
-            row_data = dict(data)
-            # Serialise list fields as JSON strings for CSV storage
-            for field in ("net_income_history", "revenue_history", "dps_history"):
-                v = row_data.get(field, [])
-                row_data[field] = _json.dumps(v if isinstance(v, list) else [])
-            row = pd.DataFrame([row_data])
-            if FUNDAMENTALS_CSV.exists():
-                existing = pd.read_csv(FUNDAMENTALS_CSV)
-                existing = existing[existing["ticker"] != ticker]
-                combined = pd.concat([existing, row], ignore_index=True)
+            all_prices = get_all_prices()
+            print(f"[prefetch] Got prices for {len(all_prices)} stocks")
+        except Exception as e:
+            print(f"[prefetch] Bulk price fetch failed: {e}")
+
+        # Fundamentals fetched in parallel (slower, one per stock)
+        def _fetch_fund(meta):
+            t = meta["ticker"]
+            base = t.split(".")[0].upper()
+            try:
+                fund = scrape_fundamentals(t)
+                print(f"[prefetch] {base}: fund={'OK' if fund.get('pe') or fund.get('eps') else 'partial/none'}")
+            except Exception as e:
+                print(f"[prefetch] {base}: fund error {e}")
+
+        print(f"[prefetch] Fetching fundamentals for {len(tickers)} stocks…")
+        with ThreadPoolExecutor(max_workers=4) as ex:
+            list(ex.map(_fetch_fund, tickers))
+        print("[prefetch] Done.")
+
+    # ------------------------------------------------------------------ #
+    #  Data freshness                                                      #
+    # ------------------------------------------------------------------ #
+
+    def _save_status(self, base: str, ok: bool, source: str, price: float = 0):
+        status = _load_json(FETCH_STATUS_JSON, {})
+        status[base] = {
+            "ok": ok, "source": source,
+            "price": round(price, 2),
+            "updated_at": datetime.now().isoformat(),
+        }
+        _save_json(FETCH_STATUS_JSON, status)
+
+    def get_data_freshness(self, tickers: list) -> list:
+        status_map = _load_json(FETCH_STATUS_JSON, {})
+        price_cache = _load_json(DATA_DIR / "nse_cache" / "prices.json", {})
+        fund_cache  = _load_json(DATA_DIR / "nse_cache" / "fundamentals.json", {})
+        result = []
+
+        for meta in tickers:
+            t    = meta["ticker"]
+            base = t.split(".")[0].upper()
+            st   = status_map.get(base, {})
+            pc   = price_cache.get(base, {})
+            fc   = fund_cache.get(base, {})
+
+            price_age = _hours_old(pc.get("updated_at","2000-01-01")) if pc else 9999
+            fund_age  = _hours_old(fc.get("last_update","2000-01-01")) if fc else 9999
+            price_val = pc.get("price", 0) or st.get("price", 0)
+            source    = pc.get("source", st.get("source","unknown"))
+
+            if price_age < 4:
+                freshness, color = "live",    "#49A078"
+            elif price_age < 24:
+                freshness, color = "today",   "#86efac"
+            elif price_age < 168:
+                freshness, color = "stale",   "#facc15"
             else:
-                combined = row
-            combined.to_csv(FUNDAMENTALS_CSV, index=False)
-        except Exception as e:
-            print(f"[DataLoader] fundamentals cache write failed: {e}")
+                freshness, color = "no_data", "#ef4444"
+
+            # If source is manual_stub, always show as no_data
+            if source == "manual_stub":
+                freshness, color = "no_data", "#ef4444"
+
+            result.append({
+                "ticker":      t,
+                "name":        meta["name"],
+                "sector":      meta["sector"],
+                "price":       price_val,
+                "source":      source,
+                "freshness":   freshness,
+                "color":       color,
+                "price_age_h": round(price_age, 1),
+                "fund_age_h":  round(fund_age, 1),
+                "updated_at":  pc.get("updated_at", "never"),
+            })
+        return result
 
     # ------------------------------------------------------------------ #
     #  Watchlist                                                           #
     # ------------------------------------------------------------------ #
 
     def get_watchlist(self) -> list:
-        if WATCHLIST_JSON.exists():
-            try:
-                with open(WATCHLIST_JSON) as f:
-                    import json as _json
-                    return _json.load(f)
-            except Exception:
-                pass
-        return []
+        return _load_json(WATCHLIST_JSON, [])
 
     def add_to_watchlist(self, ticker: str) -> list:
         wl = self.get_watchlist()
         if ticker not in wl:
             wl.append(ticker)
-            with open(WATCHLIST_JSON, "w") as f:
-                import json as _json
-                _json.dump(wl, f)
+            _save_json(WATCHLIST_JSON, wl)
         return wl
 
     def remove_from_watchlist(self, ticker: str) -> list:
         wl = [t for t in self.get_watchlist() if t != ticker]
-        with open(WATCHLIST_JSON, "w") as f:
-            import json as _json
-            _json.dump(wl, f)
+        _save_json(WATCHLIST_JSON, wl)
         return wl
 
     # ------------------------------------------------------------------ #
-    #  Missing data store                                                  #
+    #  Missing data                                                        #
     # ------------------------------------------------------------------ #
 
-    def _load_missing(self) -> dict:
-        if MISSING_JSON.exists():
-            try:
-                with open(MISSING_JSON) as f:
-                    import json as _json
-                    return _json.load(f)
-            except Exception:
-                pass
-        return {}
-
-    def _save_missing(self, data: dict):
-        with open(MISSING_JSON, "w") as f:
-            import json as _json
-            _json.dump(data, f, indent=2)
-
-    def save_missing_field(self, ticker: str, field_name: str, value, source: str):
-        data = self._load_missing()
-        if ticker not in data:
-            data[ticker] = {}
-        data[ticker][field_name] = {
-            "value": value,
-            "source": source,
-            "created_at": datetime.now().isoformat(),
-        }
-        self._save_missing(data)
-
-    def _inject_missing_data(self, ticker: str, fund: dict) -> dict:
-        """Overlay any manually entered missing-data values onto the fund dict."""
-        data = self._load_missing()
-        overrides = data.get(ticker, {})
+    def _inject_missing_data(self, base: str, fund: dict) -> dict:
+        overrides = _load_json(MISSING_JSON, {}).get(base, {})
         if not overrides:
             return fund
         fund = dict(fund)
@@ -336,8 +242,18 @@ class DataLoader:
             fund[field] = entry["value"]
         return fund
 
+    def save_missing_field(self, ticker: str, field_name: str, value, source: str):
+        base = ticker.split(".")[0].upper()
+        data = _load_json(MISSING_JSON, {})
+        if base not in data:
+            data[base] = {}
+        data[base][field_name] = {
+            "value": value, "source": source,
+            "created_at": datetime.now().isoformat(),
+        }
+        _save_json(MISSING_JSON, data)
+
     def get_missing_fields(self, ticker: str, fund: dict) -> list:
-        """Return list of important fields that are None/missing for this stock."""
         important = [
             ("roe",               "ROE (Return on Equity)"),
             ("pe",                "P/E Ratio"),
@@ -350,9 +266,8 @@ class DataLoader:
             ("revenue_history",   "5-Year Revenue History"),
             ("dps_history",       "5-Year Dividend History"),
         ]
-        missing = []
-        for field, label in important:
-            val = fund.get(field)
-            if val is None or val == [] or val == 0:
-                missing.append({"field": field, "label": label})
-        return missing
+        return [
+            {"field": f, "label": l}
+            for f, l in important
+            if not fund.get(f) or fund.get(f) == []
+        ]

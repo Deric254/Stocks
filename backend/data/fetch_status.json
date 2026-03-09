@@ -1,0 +1,188 @@
+{
+  "SBIC": {
+    "ok": true,
+    "source": "nse_scraper",
+    "price": 116.15,
+    "updated_at": "2026-03-09T15:25:51.779515"
+  },
+  "EABL": {
+    "ok": true,
+    "source": "nse_scraper",
+    "price": 168.78,
+    "updated_at": "2026-03-09T15:25:54.893208"
+  },
+  "UNGA": {
+    "ok": true,
+    "source": "nse_scraper",
+    "price": 32.33,
+    "updated_at": "2026-03-09T15:25:56.420091"
+  },
+  "KCGM": {
+    "ok": true,
+    "source": "nse_scraper",
+    "price": 4.82,
+    "updated_at": "2026-03-09T15:25:55.961736"
+  },
+  "LIMT": {
+    "ok": true,
+    "source": "nse_scraper",
+    "price": 550.82,
+    "updated_at": "2026-03-09T15:27:02.999837"
+  },
+  "BAT": {
+    "ok": true,
+    "source": "nse_scraper",
+    "price": 435.19,
+    "updated_at": "2026-03-09T15:25:54.648516"
+  },
+  "SASN": {
+    "ok": true,
+    "source": "nse_scraper",
+    "price": 18.2,
+    "updated_at": "2026-03-09T15:26:50.019107"
+  },
+  "KAPC": {
+    "ok": true,
+    "source": "nse_scraper",
+    "price": 110.56,
+    "updated_at": "2026-03-09T15:26:56.527826"
+  },
+  "TPSE": {
+    "ok": false,
+    "source": "stub",
+    "price": 0,
+    "updated_at": "2026-03-09T15:27:15.959085"
+  },
+  "CTUM": {
+    "ok": true,
+    "source": "nse_scraper",
+    "price": 18.07,
+    "updated_at": "2026-03-09T15:27:05.945936"
+  },
+  "BRIT": {
+    "ok": true,
+    "source": "nse_scraper",
+    "price": 5.51,
+    "updated_at": "2026-03-09T15:26:11.734105"
+  },
+  "BERG": {
+    "ok": false,
+    "source": "stub",
+    "price": 0,
+    "updated_at": "2026-03-09T15:27:02.530537"
+  },
+  "NSE": {
+    "ok": true,
+    "source": "nse_scraper",
+    "price": 10.07,
+    "updated_at": "2026-03-09T15:27:06.459255"
+  },
+  "JUB": {
+    "ok": true,
+    "source": "nse_scraper",
+    "price": 289.74,
+    "updated_at": "2026-03-09T15:26:46.508409"
+  },
+  "TOTL": {
+    "ok": true,
+    "source": "nse_scraper",
+    "price": 21.14,
+    "updated_at": "2026-03-09T15:26:29.660223"
+  },
+  "CIC": {
+    "ok": true,
+    "source": "nse_scraper",
+    "price": 2.35,
+    "updated_at": "2026-03-09T15:26:22.458062"
+  },
+  "KNRE": {
+    "ok": true,
+    "source": "nse_scraper",
+    "price": 18.75,
+    "updated_at": "2026-03-09T15:26:26.040898"
+  },
+  "KENOL": {
+    "ok": true,
+    "source": "nse_scraper",
+    "price": 10.79,
+    "updated_at": "2026-03-09T15:26:30.552046"
+  },
+  "ARM": {
+    "ok": true,
+    "source": "nse_scraper",
+    "price": 0.5,
+    "updated_at": "2026-03-09T15:26:32.071349"
+  },
+  "BAMB": {
+    "ok": true,
+    "source": "nse_scraper",
+    "price": 45.0,
+    "updated_at": "2026-03-09T15:26:30.438120"
+  },
+  "CABL": {
+    "ok": true,
+    "source": "nse_scraper",
+    "price": 3.59,
+    "updated_at": "2026-03-09T15:26:46.167748"
+  },
+  "ABSA": {
+    "ok": true,
+    "source": "nse_scraper",
+    "price": 14.18,
+    "updated_at": "2026-03-09T15:25:18.184373"
+  },
+  "COOP": {
+    "ok": true,
+    "source": "nse_scraper",
+    "price": 13.53,
+    "updated_at": "2026-03-09T15:25:17.884777"
+  },
+  "EQTY": {
+    "ok": true,
+    "source": "nse_scraper",
+    "price": 51.79,
+    "updated_at": "2026-03-09T15:25:18.873045"
+  },
+  "KCB": {
+    "ok": true,
+    "source": "nse_scraper",
+    "price": 35.77,
+    "updated_at": "2026-03-09T15:25:20.293029"
+  },
+  "DTK": {
+    "ok": true,
+    "source": "nse_scraper",
+    "price": 54.86,
+    "updated_at": "2026-03-09T15:25:18.404873"
+  },
+  "NCBA": {
+    "ok": true,
+    "source": "nse_scraper",
+    "price": 42.13,
+    "updated_at": "2026-03-09T15:25:19.001416"
+  },
+  "SCBK": {
+    "ok": true,
+    "source": "nse_scraper",
+    "price": 171.24,
+    "updated_at": "2026-03-09T15:25:20.577650"
+  },
+  "I&M": {
+    "ok": false,
+    "source": "stub",
+    "price": 0,
+    "updated_at": "2026-03-09T15:25:37.971576"
+  },
+  "HF": {
+    "ok": true,
+    "source": "nse_scraper",
+    "price": 3.57,
+    "updated_at": "2026-03-09T15:25:53.088420"
+  },
+  "SCOM": {
+    "ok": true,
+    "source": "nse_scraper",
+    "price": 17.73,
+    "updated_at": "2026-03-09T15:25:53.505789"
+  }
+}
