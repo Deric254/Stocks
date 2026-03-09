@@ -51,13 +51,13 @@
     "ok": false,
     "source": "stub",
     "price": 0,
-    "updated_at": "2026-03-09T15:21:07.906039"
+    "updated_at": "2026-03-09T15:27:15.959085"
   },
   "CTUM": {
     "ok": true,
     "source": "nse_scraper",
-    "price": 17.84,
-    "updated_at": "2026-03-09T15:20:55.370878"
+    "price": 18.07,
+    "updated_at": "2026-03-09T15:27:05.945936"
   },
   "BRIT": {
     "ok": true,
@@ -74,8 +74,8 @@
   "NSE": {
     "ok": true,
     "source": "nse_scraper",
-    "price": 9.88,
-    "updated_at": "2026-03-09T15:20:55.959059"
+    "price": 10.07,
+    "updated_at": "2026-03-09T15:27:06.459255"
   },
   "JUB": {
     "ok": true,
