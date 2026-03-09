@@ -1,0 +1,24 @@
+services:
+  # Backend API on Render
+  - type: web
+    name: stockintel-api
+    runtime: python
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: PYTHON_VERSION
+        value: 3.11.0
+
+  # Frontend on Render (static site)
+  - type: web
+    name: stockintel-frontend
+    runtime: static
+    rootDir: frontend
+    buildCommand: npm install && npm run build
+    staticPublishPath: dist
+    envVars:
+      - key: VITE_API_URL
+        value: https://stockintel-api.onrender.com  # UPDATE THIS after backend deploys

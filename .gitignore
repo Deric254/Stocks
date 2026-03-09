@@ -2,25 +2,32 @@
 __pycache__/
 *.pyc
 *.pyo
-.env
-venv/
-.venv/
+*.pyd
+.Python
 *.egg-info/
+dist/
+build/
+.env
 
 # Node
 node_modules/
-dist/
-.cache/
+frontend/dist/
 
-# Env files (keep .env.example, ignore actual secrets)
-.env.local
-.env.production
+# Data caches (will regenerate — don't commit stale data)
+backend/data/nse_cache/
+backend/data/gold/
+backend/data/fetch_status.json
+
+# Keep these (needed for app to start)
+!backend/data/config.json
+!backend/data/fundamentals.csv
+!backend/data/prices_history.csv
+!backend/data/portfolio_trades.csv
 
 # OS
 .DS_Store
 Thumbs.db
 
-# Editors
+# IDE
 .vscode/
 .idea/
-*.swp

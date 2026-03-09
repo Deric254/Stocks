@@ -1,0 +1,13 @@
+{
+  "scoring_weights": {
+    "daily": 0.4,
+    "monthly": 0.3,
+    "long_term": 0.3
+  },
+  "api": {
+    "yahoo_source": "yfinance"
+  },
+  "ui": {
+    "default_currency": "KES"
+  }
+}
