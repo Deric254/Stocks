@@ -8,7 +8,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
-import uvicorn, math, threading, os
+import uvicorn, math, threading, os, time
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 
@@ -25,6 +25,28 @@ async def lifespan(app: FastAPI):
         loader.prefetch_all(NSE_TICKERS)
     threading.Thread(target=_bg, daemon=True).start()
     print("[startup] Background prefetch started.")
+
+    # ── Keep-alive: ping self every 14 minutes so Render never sleeps ──
+    def _keep_alive():
+        # Wait 2 min after startup before first ping
+        time.sleep(120)
+        self_url = os.environ.get("RENDER_EXTERNAL_URL", "")
+        if not self_url:
+            print("[keep-alive] RENDER_EXTERNAL_URL not set — self-ping disabled (local mode)")
+            return
+        ping_url = f"{self_url}/"
+        print(f"[keep-alive] Starting self-ping every 14 min → {ping_url}")
+        while True:
+            try:
+                import requests as _req
+                r = _req.get(ping_url, timeout=10)
+                print(f"[keep-alive] Ping OK — {r.status_code} at {datetime.now().strftime('%H:%M:%S')}")
+            except Exception as e:
+                print(f"[keep-alive] Ping failed: {e}")
+            time.sleep(14 * 60)  # 14 minutes
+
+    threading.Thread(target=_keep_alive, daemon=True).start()
+    print("[startup] Keep-alive self-ping thread started.")
     yield
     # Shutdown (nothing needed)
 
