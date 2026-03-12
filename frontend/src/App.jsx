@@ -950,12 +950,17 @@ function Watchlist({stocks,watchlist,onSelect,onTrade}){
 
 
 // ── Data Freshness Screen ───────────────────────────────────────────────────
-function DataFreshness({onToast}){
-  const [data, setData]       = useState([]);
-  const [loading, setLoading] = useState(true);
+function DataFreshness({onToast, focusTicker=null, focusField=null}){
+  const [data, setData]         = useState([]);
+  const [loading, setLoading]   = useState(true);
   const [refreshing, setRefreshing] = useState({});
   const [bulkRefreshing, setBulkRefreshing] = useState(false);
   const [sourceInfo, setSourceInfo] = useState(null);
+  const [editRow, setEditRow]   = useState(null);   // {ticker, field}
+  const [editVal, setEditVal]   = useState("");
+  const [saving, setSaving]     = useState(false);
+  const [filter, setFilter]     = useState("all");  // all|issues|stub|no_fund
+  const rowRefs = useRef({});
 
   const load = () => {
     setLoading(true);
@@ -971,11 +976,21 @@ function DataFreshness({onToast}){
 
   useEffect(()=>{ load(); const iv=setInterval(load,30000); return()=>clearInterval(iv); },[]);
 
+  // Deep-link: scroll to focused ticker when data loads
+  useEffect(()=>{
+    if(focusTicker && data.length>0){
+      setTimeout(()=>{
+        const el = rowRefs.current[focusTicker];
+        if(el){ el.scrollIntoView({behavior:"smooth",block:"center"}); el.style.outline="2px solid "+C.green; setTimeout(()=>{ el.style.outline=""; },2000); }
+      }, 200);
+    }
+  },[focusTicker, data]);
+
   const forceRefresh = async (ticker) => {
     setRefreshing(r=>({...r,[ticker]:true}));
     try{
       const r = await post("/api/refresh-stock",{ticker});
-      onToast(`${ticker} refreshed — price:${r.price_ok?"✅":"❌"} fund:${r.fund_ok?"✅":"❌"}`,"info");
+      onToast(`${ticker}: price ${r.price_ok?"✅":"❌"}  fundamentals ${r.fund_ok?"✅":"❌"}`,"info");
       load();
     }catch(e){ onToast("Refresh failed","error"); }
     setRefreshing(r=>({...r,[ticker]:false}));
@@ -985,125 +1000,220 @@ function DataFreshness({onToast}){
     setBulkRefreshing(true);
     try{
       const r = await post("/api/refresh-all-prices",{});
-      onToast(`Prices refreshed: ${r.live} live from ${r.source}, ${r.stubs} stubs`,"info");
+      onToast(`Refreshed: ${r.live} live · ${r.stubs} stubs`,"info");
       load();
-    }catch(e){ onToast("Bulk refresh failed — check backend logs","error"); }
+    }catch(e){ onToast("Bulk refresh failed","error"); }
     setBulkRefreshing(false);
+  };
+
+  const openEdit = (ticker, field, currentVal="") => {
+    setEditRow({ticker, field});
+    setEditVal(currentVal!=null?String(currentVal):"");
+  };
+
+  const saveEdit = async () => {
+    if(!editRow || !editVal.trim()) return;
+    setSaving(true);
+    try{
+      const {ticker, field} = editRow;
+      if(field==="PRICE"){
+        await post("/api/manual-price",{ticker, price: parseFloat(editVal)});
+        onToast(`${ticker} price set to KES ${editVal} ✅`,"info");
+      } else {
+        await post("/api/manual-fundamental",{ticker, field:field.toLowerCase(), value: parseFloat(editVal)});
+        onToast(`${ticker} ${field} set to ${editVal} ✅`,"info");
+      }
+      setEditRow(null); setEditVal("");
+      load();
+    }catch(e){ onToast(`Save failed: ${e.message}`,"error"); }
+    setSaving(false);
   };
 
   const summary = {
     live:    data.filter(d=>d.freshness==="live").length,
     today:   data.filter(d=>d.freshness==="today").length,
     stale:   data.filter(d=>d.freshness==="stale").length,
-    no_data: data.filter(d=>d.freshness==="no_data").length,
+    issues:  data.filter(d=>d.issue_count>0).length,
   };
 
-  const cardStyle = {background:C.surface,border:"1px solid "+C.borderGray,borderRadius:13,padding:20,boxShadow:"0 2px 12px #0000000A"};
+  const filtered = data.filter(d=>{
+    if(filter==="issues") return d.issue_count>0;
+    if(filter==="stub")   return d.freshness==="stub"||d.freshness==="no_data";
+    if(filter==="no_fund") return !d.has_eps||!d.has_pe||!d.has_roe;
+    return true;
+  });
+
+  const card = {background:C.surface,border:"1px solid "+C.borderGray,borderRadius:13,padding:20,boxShadow:"0 2px 12px #0000000A"};
   const isLive = sourceInfo?.is_live;
 
   return(
     <div>
-      {/* Live source banner */}
-      {sourceInfo && (
-        <div style={{...cardStyle,marginBottom:16,background:isLive?"#f0fdf4":"#fff7ed",border:"1px solid "+(isLive?"#86efac":"#fde68a")}}>
+      {/* Source banner */}
+      {sourceInfo&&(
+        <div style={{...card,marginBottom:16,background:isLive?"#f0fdf4":"#fff7ed",border:"1px solid "+(isLive?"#86efac":"#fde68a")}}>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:10}}>
             <div>
               <div style={{fontSize:13,fontWeight:700,color:isLive?"#166534":"#92400e",marginBottom:4}}>
-                {isLive?"✅ Live prices active — kenyanstocks.com":"⚠️ Using reference prices — live fetch may have failed"}
+                {isLive?"✅ Live prices active — kenyanstocks.com":"⚠️ Live fetch failed — showing reference prices"}
               </div>
               <div style={{fontSize:11,color:isLive?"#166534":"#92400e"}}>
-                Sources active: {Object.entries(sourceInfo.sources||{}).map(([s,c])=>`${s}(${c})`).join(", ")||"none"} &nbsp;|&nbsp;
-                Sample: {Object.entries(sourceInfo.sample_prices||{}).map(([k,v])=>`${k}=${v}`).join(", ")}
+                Sources: {Object.entries(sourceInfo.sources||{}).map(([s,c])=>`${s}(${c})`).join(", ")||"none"} · Sample: {Object.entries(sourceInfo.sample_prices||{}).slice(0,3).map(([k,v])=>`${k}=${v}`).join(", ")}
               </div>
             </div>
             <button onClick={refreshAllPrices} disabled={bulkRefreshing}
               style={{padding:"9px 18px",borderRadius:9,border:"none",background:isLive?C.green:"#f97316",color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:"inherit",opacity:bulkRefreshing?0.6:1}}>
-              {bulkRefreshing?"Fetching…":"🔄 Refresh All Prices Now"}
+              {bulkRefreshing?"Fetching…":"🔄 Refresh All Prices"}
             </button>
           </div>
         </div>
       )}
 
-      {/* Summary row */}
-      <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:14,marginBottom:20}}>
+      {/* Summary cards */}
+      <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:12,marginBottom:20}}>
         {[
-          {l:"Live (< 4h)",    v:summary.live,    c:"#49A078", tb:"#49A078"},
-          {l:"Today (< 24h)",  v:summary.today,   c:"#86efac", tb:"#86efac"},
-          {l:"Stale (< 7d)",   v:summary.stale,   c:"#facc15", tb:"#facc15"},
-          {l:"No Data",        v:summary.no_data, c:"#ef4444", tb:"#ef4444"},
-        ].map(({l,v,c,tb})=>(
-          <div key={l} style={{...cardStyle,borderTop:"3px solid "+tb}}>
+          {l:"Live (< 4h)",   v:summary.live,   c:C.green,  f:"all"},
+          {l:"Today (< 24h)", v:summary.today,  c:"#86efac",f:"all"},
+          {l:"Stale / Stub",  v:summary.stale,  c:C.orange, f:"stub"},
+          {l:"Has Issues",    v:summary.issues, c:C.red,    f:"issues"},
+        ].map(({l,v,c,f})=>(
+          <div key={l} onClick={()=>setFilter(f===filter?"all":f)} style={{...card,borderTop:"3px solid "+c,cursor:"pointer",opacity:filter!=="all"&&filter!==f?0.5:1,transition:"opacity .15s"}}>
             <div style={{fontSize:10,color:C.muted,fontWeight:600,textTransform:"uppercase",marginBottom:3}}>{l}</div>
             <div style={{fontSize:28,fontWeight:900,color:c}}>{v}</div>
-            <div style={{fontSize:10,color:C.muted}}>stocks</div>
+            <div style={{fontSize:10,color:C.muted}}>click to filter</div>
           </div>
         ))}
       </div>
 
-      {/* Explanation */}
-      <div style={{...cardStyle,marginBottom:20,background:"#fffbeb",border:"1px solid #fde68a"}}>
-        <div style={{fontSize:12,color:"#92400e",lineHeight:1.7}}>
-          <strong>ℹ️ How data works:</strong> Stock prices are fetched live from <strong>kenyanstocks.com</strong> (all NSE stocks in one request) and cached for 4 hours.
-          Fundamentals (PE, EPS, ROE etc.) come from <strong>afx.kwayisi.org</strong> and are cached for 24 hours.
-          If live fetching fails, stale cache up to 7 days is served rather than leaving fields empty.
-          If everything fails, reference prices from March 2026 are shown (clearly marked as stubs).
-          Click <strong>🔄 Refresh All Prices Now</strong> to force a live fetch. Click <strong>↻</strong> on any row to refresh that stock individually.
+      {/* Inline edit modal */}
+      {editRow&&(
+        <div style={{...card,marginBottom:16,background:"#f0fdf4",border:"2px solid "+C.green}}>
+          <div style={{fontSize:13,fontWeight:700,color:C.text,marginBottom:10}}>
+            ✏️ Set {editRow.field} for <span style={{color:C.green}}>{editRow.ticker}</span>
+          </div>
+          <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+            <input value={editVal} onChange={e=>setEditVal(e.target.value)}
+              onKeyDown={e=>e.key==="Enter"&&saveEdit()}
+              placeholder={editRow.field==="PRICE"?"e.g. 75.50":"e.g. 8.5"}
+              style={{padding:"8px 12px",borderRadius:8,border:"1.5px solid "+C.green,fontSize:13,width:160,fontFamily:"inherit",outline:"none"}}
+              autoFocus/>
+            <div style={{fontSize:11,color:C.muted,flex:1}}>
+              {editRow.field==="PRICE"?"Enter current market price in KES":
+               editRow.field==="ROE"?"Enter as decimal (e.g. 0.18 = 18%)":
+               editRow.field==="DIVIDEND_YIELD"?"Enter as decimal (e.g. 0.05 = 5%)":
+               "Enter value from company annual report"}
+            </div>
+            <button onClick={saveEdit} disabled={saving||!editVal.trim()}
+              style={{padding:"8px 20px",borderRadius:8,border:"none",background:C.green,color:"#fff",fontWeight:700,fontSize:13,cursor:"pointer",fontFamily:"inherit",opacity:saving||!editVal.trim()?0.5:1}}>
+              {saving?"Saving…":"Save ✓"}
+            </button>
+            <button onClick={()=>{setEditRow(null);setEditVal("");}}
+              style={{padding:"8px 14px",borderRadius:8,border:"1px solid "+C.borderGray,background:"transparent",color:C.muted,fontSize:12,cursor:"pointer",fontFamily:"inherit"}}>
+              Cancel
+            </button>
+          </div>
         </div>
+      )}
+
+      {/* Filter tabs */}
+      <div style={{display:"flex",gap:8,marginBottom:14,flexWrap:"wrap"}}>
+        {[["all","All Stocks"],["issues","⚠️ Has Issues"],["stub","🔴 Stub/No Data"],["no_fund","📊 Missing Fundamentals"]].map(([v,l])=>(
+          <button key={v} onClick={()=>setFilter(v)}
+            style={{padding:"6px 14px",borderRadius:20,border:"1.5px solid "+(filter===v?C.green:C.borderGray),background:filter===v?C.greenLt:"transparent",color:filter===v?C.greenDk:C.muted,fontSize:11,fontWeight:filter===v?700:400,cursor:"pointer",fontFamily:"inherit"}}>
+            {l}
+          </button>
+        ))}
+        <div style={{flex:1}}/>
+        <div style={{fontSize:11,color:C.muted,alignSelf:"center"}}>Showing {filtered.length} of {data.length}</div>
       </div>
 
       {/* Table */}
-      <div style={cardStyle}>
-        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
-          <div style={{fontSize:13,fontWeight:700,color:C.text}}>Per-Stock Data Status ({data.length} stocks)</div>
-          <button onClick={load} style={{padding:"7px 16px",borderRadius:8,border:"1px solid "+C.borderGray,background:"transparent",color:C.muted,fontSize:12,cursor:"pointer",fontFamily:"inherit"}}>↻ Refresh Status</button>
-        </div>
-        {loading?<Loader text="Loading freshness data…"/>:(
+      <div style={card}>
+        {loading?<Loader text="Loading data status…"/>:(
           <div style={{overflowX:"auto"}}>
             <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
               <thead>
                 <tr style={{background:C.greenBg,borderBottom:"2px solid "+C.border}}>
-                  {["Stock","Sector","Price","Source","Price Age","Fund Age","Status","Action"].map(h=>(
+                  {["Stock","Price","Source","Price Age","Fundamentals","Issues","Actions"].map(h=>(
                     <th key={h} style={{padding:"9px 12px",textAlign:"left",fontSize:10,color:C.muted,fontWeight:700,textTransform:"uppercase",whiteSpace:"nowrap"}}>{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
-                {data.map(d=>(
-                  <tr key={d.ticker} style={{borderBottom:"1px solid "+C.borderGray}}>
-                    <td style={{padding:"9px 12px"}}>
-                      <div style={{fontWeight:700,color:C.text,fontSize:13}}>{d.ticker}</div>
-                      <div style={{fontSize:10,color:C.muted}}>{d.name}</div>
-                    </td>
-                    <td style={{padding:"9px 12px",fontSize:11,color:C.muted}}>{d.sector}</td>
-                    <td style={{padding:"9px 12px",fontWeight:700,color:d.price>0?C.text:C.red}}>
-                      {d.price>0?"KES "+d.price.toLocaleString():"—"}
-                    </td>
-                    <td style={{padding:"9px 12px",fontSize:11,color:d.source==="manual_stub"?C.red:C.muted,maxWidth:120,overflow:"hidden",textOverflow:"ellipsis",fontWeight:d.source==="manual_stub"?700:400}}>{d.source||"—"}</td>
-                    <td style={{padding:"9px 12px"}}>
-                      <span style={{fontSize:11,color:d.price_age_h<4?C.green:d.price_age_h<24?"#92400e":C.red,fontWeight:600}}>
-                        {d.price_age_h>=9990?"never":d.price_age_h<1?(d.price_age_h*60).toFixed(0)+"m":d.price_age_h.toFixed(1)+"h"}
-                      </span>
-                    </td>
-                    <td style={{padding:"9px 12px"}}>
-                      <span style={{fontSize:11,color:d.fund_age_h<24?C.green:d.fund_age_h<168?"#92400e":C.red,fontWeight:600}}>
-                        {d.fund_age_h>=9990?"never":d.fund_age_h<1?(d.fund_age_h*60).toFixed(0)+"m":d.fund_age_h.toFixed(1)+"h"}
-                      </span>
-                    </td>
-                    <td style={{padding:"9px 12px"}}>
-                      <span style={{display:"inline-block",padding:"3px 10px",borderRadius:12,background:d.color+"22",border:"1px solid "+d.color,color:d.color,fontWeight:700,fontSize:10,textTransform:"uppercase"}}>
-                        {d.freshness==="live"?"🟢 Live":d.freshness==="today"?"🟡 Today":d.freshness==="stale"?"🟠 Stale":"🔴 Stub"}
-                      </span>
-                    </td>
-                    <td style={{padding:"9px 12px"}}>
-                      <button
-                        onClick={()=>forceRefresh(d.ticker)}
-                        disabled={!!refreshing[d.ticker]}
-                        style={{padding:"5px 12px",borderRadius:7,border:"1.5px solid "+C.green,background:"transparent",color:C.green,fontWeight:700,fontSize:11,cursor:refreshing[d.ticker]?"not-allowed":"pointer",opacity:refreshing[d.ticker]?0.5:1,fontFamily:"inherit"}}>
-                        {refreshing[d.ticker]?"⏳":"↻ Refresh"}
-                      </button>
-                    </td>
-                  </tr>
-                ))}
+                {filtered.map(d=>{
+                  const hasIssues = d.issue_count>0;
+                  const isStub = d.freshness==="stub"||d.freshness==="no_data";
+                  return(
+                    <tr key={d.ticker} ref={el=>rowRefs.current[d.ticker]=el}
+                      style={{borderBottom:"1px solid "+C.borderGray,background:hasIssues?"#fffbeb":C.surface,transition:"background .2s"}}>
+                      <td style={{padding:"10px 12px"}}>
+                        <div style={{fontWeight:700,color:C.text,fontSize:13}}>{d.ticker}</div>
+                        <div style={{fontSize:10,color:C.muted}}>{d.name}</div>
+                        <div style={{fontSize:9,color:C.dim}}>{d.sector}</div>
+                      </td>
+                      <td style={{padding:"10px 12px"}}>
+                        <div style={{fontWeight:700,color:isStub?C.red:C.text,fontSize:13}}>
+                          {d.price>0?"KES "+Number(d.price).toLocaleString("en-KE",{minimumFractionDigits:2,maximumFractionDigits:2}):"—"}
+                        </div>
+                        <button onClick={()=>openEdit(d.ticker,"PRICE",d.price)}
+                          style={{fontSize:9,color:C.green,background:"none",border:"none",cursor:"pointer",padding:0,fontFamily:"inherit",marginTop:2}}>
+                          ✏️ edit price
+                        </button>
+                      </td>
+                      <td style={{padding:"10px 12px",fontSize:11,color:isStub?C.red:C.muted,fontWeight:isStub?700:400}}>
+                        {d.source==="kenyanstocks.com"?"🟢 live scrape":
+                         d.source==="manual_override"?"🔵 manual":
+                         d.source==="manual_stub"?"🔴 reference":
+                         d.source||"—"}
+                      </td>
+                      <td style={{padding:"10px 12px"}}>
+                        <span style={{fontSize:11,color:d.price_age_h<4?C.green:d.price_age_h<24?"#92400e":C.red,fontWeight:600}}>
+                          {d.price_age_h>=9990?"never":d.price_age_h<1?(d.price_age_h*60).toFixed(0)+"m":d.price_age_h.toFixed(1)+"h"}
+                        </span>
+                      </td>
+                      <td style={{padding:"10px 12px"}}>
+                        <div style={{display:"flex",gap:4,flexWrap:"wrap"}}>
+                          {[["PE",d.has_pe],["EPS",d.has_eps],["ROE",d.has_roe],["BVPS",d.has_bvps],["DIV",d.has_div]].map(([f,ok])=>(
+                            <span key={f} onClick={!ok?()=>openEdit(d.ticker,f):undefined}
+                              style={{fontSize:9,fontWeight:700,padding:"2px 6px",borderRadius:6,
+                                background:ok?C.greenLt:C.redLt,color:ok?C.greenDk:C.red,
+                                cursor:ok?"default":"pointer",border:"1px solid "+(ok?C.green+"44":C.red+"44"),
+                                title:ok?"":"Click to enter "+f}}>
+                              {ok?"✓":"+"}  {f}
+                            </span>
+                          ))}
+                        </div>
+                        <div style={{fontSize:9,color:C.muted,marginTop:3}}>
+                          {d.fund_source==="seed_fy2024"?"📋 FY2024 filing":
+                           d.fund_source&&d.fund_source.includes("afx")?"🌐 live":
+                           d.fund_source&&d.fund_source.includes("manual")?"🔵 manual":
+                           "—"}
+                        </div>
+                      </td>
+                      <td style={{padding:"10px 12px",maxWidth:200}}>
+                        {hasIssues?(
+                          <div>
+                            {d.issues.slice(0,3).map((iss,i)=>(
+                              <div key={i} onClick={()=>openEdit(d.ticker,iss.field)}
+                                style={{fontSize:10,color:iss.severity==="critical"?C.red:"#92400e",marginBottom:3,cursor:"pointer",display:"flex",alignItems:"center",gap:4}}>
+                                <span>{iss.severity==="critical"?"🔴":"🟡"}</span>
+                                <span style={{textDecoration:"underline"}}>{iss.message}</span>
+                              </div>
+                            ))}
+                            {d.issues.length>3&&<div style={{fontSize:9,color:C.muted}}>+{d.issues.length-3} more</div>}
+                          </div>
+                        ):(
+                          <span style={{fontSize:11,color:C.green,fontWeight:600}}>✅ All good</span>
+                        )}
+                      </td>
+                      <td style={{padding:"10px 12px",whiteSpace:"nowrap"}}>
+                        <button onClick={()=>forceRefresh(d.ticker)} disabled={!!refreshing[d.ticker]}
+                          style={{padding:"5px 12px",borderRadius:7,border:"1.5px solid "+C.green,background:"transparent",color:C.green,fontWeight:700,fontSize:11,cursor:refreshing[d.ticker]?"not-allowed":"pointer",opacity:refreshing[d.ticker]?0.5:1,fontFamily:"inherit"}}>
+                          {refreshing[d.ticker]?"⏳":"↻ Refresh"}
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -1656,6 +1766,8 @@ export default function App(){
   const [sidebarOpen,setSidebarOpen] = useState(false);
   const [healthAlerts,setHealthAlerts] = useState([]);
   const [showAlerts,setShowAlerts] = useState(false);
+  const [focusTicker,setFocusTicker] = useState(null);
+  const [focusField,setFocusField]   = useState(null);
   const [stocks,setStocks]       = useState([]);
   const [sectors,setSectors]     = useState([]);
   const [tickers,setTickers]     = useState([]);
@@ -1861,17 +1973,23 @@ export default function App(){
                     <div style={{padding:16,fontSize:12,color:C.muted,textAlign:"center"}}>✅ All data looks good</div>
                   ):(
                     healthAlerts.slice(0,20).map((a,i)=>(
-                      <div key={i} style={{padding:"10px 16px",borderBottom:"1px solid "+C.borderGray+"88",background:a.severity==="critical"?C.redLt:a.severity==="warning"?"#fffbeb":C.surface}}>
+                      <div key={i}
+                        onClick={()=>{setShowAlerts(false);setFocusTicker(a.ticker);setFocusField(a.field);setPage("freshness");}}
+                        style={{padding:"10px 16px",borderBottom:"1px solid "+C.borderGray+"88",
+                          background:a.severity==="critical"?C.redLt:a.severity==="warning"?"#fffbeb":C.surface,
+                          cursor:"pointer",transition:"filter .1s"}}
+                        onMouseEnter={e=>e.currentTarget.style.filter="brightness(0.96)"}
+                        onMouseLeave={e=>e.currentTarget.style.filter=""}>
                         <div style={{fontSize:11,fontWeight:700,color:a.severity==="critical"?C.red:a.severity==="warning"?"#92400e":C.text}}>
-                          {a.severity==="critical"?"🔴":"🟡"} {a.message}
+                          {a.severity==="critical"?"🔴":"🟡"} <strong>{a.ticker}</strong> — {a.message}
                         </div>
-                        <div style={{fontSize:10,color:C.muted,marginTop:2}}>→ {a.action}</div>
+                        <div style={{fontSize:10,color:C.muted,marginTop:2}}>→ {a.action} &nbsp;<span style={{color:C.green,fontWeight:700}}>Click to fix ↗</span></div>
                       </div>
                     ))
                   )}
                   <div style={{padding:"10px 16px",borderTop:"1px solid "+C.borderGray}}>
-                    <button onClick={()=>{setShowAlerts(false);setPage("freshness");}} style={{fontSize:11,color:C.green,background:"none",border:"none",cursor:"pointer",fontWeight:700}}>
-                      View Data Status Page →
+                    <button onClick={()=>{setShowAlerts(false);setFocusTicker(null);setPage("freshness");}} style={{fontSize:11,color:C.green,background:"none",border:"none",cursor:"pointer",fontWeight:700}}>
+                      View all on Data Status Page →
                     </button>
                   </div>
                 </div>
@@ -1893,7 +2011,7 @@ export default function App(){
           {page==="analytics" && <Analytics  analytics={analytics} stocks={stocks}/>}
           {page==="detail"&&selected && <StockDetail ticker={selected} onBack={()=>setPage("screener")} onTrade={openTrade} tickers={tickers} onToast={showToast}/>}
           {page==="gold"      && <GoldTrading onToast={showToast}/>}
-          {page==="freshness" && <DataFreshness onToast={showToast}/>}
+          {page==="freshness" && <DataFreshness onToast={showToast} focusTicker={focusTicker} focusField={focusField}/>}
         </div>
 
         {/* Footer */}

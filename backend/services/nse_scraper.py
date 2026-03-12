@@ -256,7 +256,11 @@ def get_data_health_report(tickers: list) -> dict:
 # ── Source 1: kenyanstocks.com bulk prices ────────────────────────────────
 
 def _scrape_kenyanstocks_bulk() -> dict:
-    """Scrape kenyanstocks.com/stock — all NSE stocks in one request."""
+    """
+    Scrape kenyanstocks.com/stock — all NSE stocks in one request.
+    Table structure: Symbol | Company | Sector | Price (KES) | Change | Volume
+    Uses header detection to find correct price column — never guesses.
+    """
     url = "https://kenyanstocks.com/stock"
     html = _get(url)
     if not html:
@@ -267,20 +271,37 @@ def _scrape_kenyanstocks_bulk() -> dict:
     results = {}
     table = soup.find("table")
     if not table:
-        # Try div-based layout (site may have changed)
-        rows = soup.find_all("tr")
-        if not rows:
-            print("[NSE] kenyanstocks.com: no table structure found")
-            return {}
-        table_rows = rows
-    else:
-        table_rows = table.find_all("tr")
+        print("[NSE] kenyanstocks.com: no table found")
+        return {}
 
-    for row in table_rows:
+    all_rows = table.find_all("tr")
+    if not all_rows:
+        return {}
+
+    # --- Detect column positions from header row ---
+    price_col = 3    # default: Symbol|Company|Sector|Price|Change|Volume
+    change_col = 4
+    volume_col = 5
+
+    header_row = all_rows[0]
+    headers = [th.get_text(strip=True).lower() for th in header_row.find_all(["th", "td"])]
+    if headers:
+        for i, h in enumerate(headers):
+            if "price" in h or "kes" in h:
+                price_col = i
+            elif "change" in h or "chg" in h or "%" in h:
+                change_col = i
+            elif "volume" in h or "vol" in h:
+                volume_col = i
+
+    data_rows = all_rows[1:]  # skip header
+
+    for row in data_rows:
         cols = row.find_all(["td", "th"])
         if len(cols) < 3:
             continue
 
+        # Extract ticker from href (most reliable)
         ticker_raw = ""
         link = cols[0].find("a")
         if link:
@@ -290,51 +311,53 @@ def _scrape_kenyanstocks_bulk() -> dict:
                 ticker_raw = parts[-1].upper().strip()
         if not ticker_raw:
             ticker_raw = cols[0].get_text(strip=True).upper().strip()
-
-        if not re.match(r'^[A-Z&]{2,6}$', ticker_raw):
+        if not re.match(r'^[A-Z&]{2,7}$', ticker_raw):
             continue
 
         texts = [c.get_text(strip=True) for c in cols]
 
+        # --- Price: use detected column, validate it's a real price ---
         price = None
-        for idx in [3, 4, 2, 1]:
-            if idx < len(texts):
-                p = _safe(texts[idx])
-                if p and 0.1 < p < 100000:
-                    price = p
-                    break
+        if price_col < len(texts):
+            raw_price = texts[price_col].replace(",", "").replace("KES", "").strip()
+            # Handle K suffix (e.g. 6.27 K for GLD ETF = 6,270)
+            if raw_price.upper().endswith("K"):
+                p = _safe(raw_price[:-1])
+                if p: raw_price = str(p * 1000)
+            p = _safe(raw_price)
+            if p and 0.10 < p < 100000:
+                price = p
         if not price:
             continue
 
+        # --- Change %: must be in change column, strip + and % ---
         change_pct = None
-        for idx in [4, 5, 3]:
-            if idx < len(texts):
-                t = texts[idx].replace("+", "")
-                c = _safe(t)
-                if c is not None and -100 < c < 500:
-                    change_pct = c
-                    break
+        if change_col < len(texts):
+            raw_chg = texts[change_col].replace("+", "").replace("%", "").strip()
+            c = _safe(raw_chg)
+            if c is not None and -50 < c < 50:   # realistic daily change range
+                change_pct = c
 
+        # --- Volume: handle K/M suffixes ---
         volume = None
-        for idx in [5, 6, 4]:
-            if idx < len(texts):
-                t = texts[idx].upper().replace(" ", "")
-                t = re.sub(r'(\d+\.?\d*)K', lambda m: str(float(m.group(1)) * 1000), t)
-                t = re.sub(r'(\d+\.?\d*)M', lambda m: str(float(m.group(1)) * 1e6), t)
-                v = _safe(t)
-                if v and v > 0:
-                    volume = int(v)
-                    break
+        if volume_col < len(texts):
+            raw_vol = texts[volume_col].upper().replace(" ", "").replace(",", "")
+            raw_vol = re.sub(r"(\d+\.?\d*)K", lambda m: str(float(m.group(1)) * 1000), raw_vol)
+            raw_vol = re.sub(r"(\d+\.?\d*)M", lambda m: str(float(m.group(1)) * 1e6), raw_vol)
+            v = _safe(raw_vol)
+            if v and v > 0:
+                volume = int(v)
 
         results[ticker_raw] = {
             "price": price, "change_pct": change_pct,
             "volume": volume, "source": "kenyanstocks.com",
+            "confidence": "high",  # from header-detected columns
         }
 
     if results:
-        print(f"[NSE] kenyanstocks.com: {len(results)} stocks ✓")
+        print(f"[NSE] kenyanstocks.com: {len(results)} stocks ✓ (price col={price_col})")
     else:
-        print("[NSE] kenyanstocks.com: 0 stocks parsed — site structure may have changed")
+        print("[NSE] kenyanstocks.com: 0 stocks parsed — page structure may have changed")
     return results
 
 

@@ -118,33 +118,86 @@ class DataLoader:
         status = _j(FETCH_STATUS_JSON, {})
         pc     = _j(CACHE_DIR / "prices.json", {})
         fc     = _j(CACHE_DIR / "fundamentals.json", {})
+
+        # Load seed fundamentals to check what's available
+        seed_path = Path(__file__).parent.parent / "data" / "nse_fundamentals_seed.json"
+        seed = {}
+        if seed_path.exists():
+            try:
+                import json
+                with open(seed_path) as f:
+                    raw = json.load(f)
+                seed = {k: v for k, v in raw.items() if not k.startswith("_")}
+            except Exception:
+                pass
+
+        CRITICAL_FIELDS = ["pe", "eps", "roe", "bvps", "dividend_yield"]
         result = []
+
         for meta in tickers:
             base      = meta["ticker"].split(".")[0].upper()
             p_entry   = pc.get(base, {})
             f_entry   = fc.get(base, {})
+            s_entry   = seed.get(base, {})
             price_age = _age_h(p_entry.get("updated_at", "2000-01-01"))
             fund_age  = _age_h(f_entry.get("last_update", "2000-01-01"))
             price_val = p_entry.get("price", 0) or status.get(base, {}).get("price", 0)
             source    = p_entry.get("source", "unknown")
 
-            if source == "manual_stub":   freshness, color = "no_data", "#ef4444"
+            # Price freshness
+            if source == "manual_stub":   freshness, color = "stub",    "#ef4444"
             elif price_age < 4:           freshness, color = "live",    "#49A078"
             elif price_age < 24:          freshness, color = "today",   "#86efac"
             elif price_age < 168:         freshness, color = "stale",   "#facc15"
             else:                         freshness, color = "no_data", "#ef4444"
 
+            # Fundamentals: prefer live cache, fall back to seed
+            eff_fund = f_entry if f_entry.get("fetch_ok") else s_entry
+            fund_source = f_entry.get("data_source", "none") if f_entry else "none"
+            if fund_source == "none" and s_entry:
+                fund_source = "seed_fy2024"
+                fund_age = _age_h(s_entry.get("last_update", "2026-03-12"))
+
+            # Per-field issues list — actionable
+            issues = []
+            for field in CRITICAL_FIELDS:
+                val = eff_fund.get(field) if eff_fund else None
+                if val is None:
+                    issues.append({
+                        "field":    field.upper(),
+                        "severity": "critical",
+                        "message":  f"Missing {field.upper()} — scoring reduced",
+                        "fix":      "manual_entry",
+                    })
+
+            # Price issue
+            if source == "manual_stub":
+                issues.insert(0, {
+                    "field":    "PRICE",
+                    "severity": "warning",
+                    "message":  "Using reference price — live fetch failed",
+                    "fix":      "manual_price",
+                })
+
             result.append({
-                "ticker":      meta["ticker"],
-                "name":        meta["name"],
-                "sector":      meta["sector"],
-                "price":       price_val,
-                "source":      source,
-                "freshness":   freshness,
-                "color":       color,
-                "price_age_h": round(price_age, 1),
-                "fund_age_h":  round(fund_age, 1),
-                "updated_at":  p_entry.get("updated_at", "never"),
+                "ticker":       meta["ticker"],
+                "name":         meta["name"],
+                "sector":       meta["sector"],
+                "price":        price_val,
+                "source":       source,
+                "freshness":    freshness,
+                "color":        color,
+                "price_age_h":  round(price_age, 1),
+                "fund_age_h":   round(fund_age, 1),
+                "fund_source":  fund_source,
+                "updated_at":   p_entry.get("updated_at", "never"),
+                "has_eps":      eff_fund.get("eps") is not None if eff_fund else False,
+                "has_pe":       eff_fund.get("pe") is not None if eff_fund else False,
+                "has_roe":      eff_fund.get("roe") is not None if eff_fund else False,
+                "has_bvps":     eff_fund.get("bvps") is not None if eff_fund else False,
+                "has_div":      eff_fund.get("dividend_yield") is not None if eff_fund else False,
+                "issues":       issues,
+                "issue_count":  len(issues),
             })
         return result
 
