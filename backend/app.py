@@ -67,45 +67,72 @@ analytics = AnalyticsEngine()
 
 # Full NSE ticker list
 NSE_TICKERS = [
-    # Banking
-    {"ticker": "EQTY.NR", "name": "Equity Group Holdings",    "sector": "Banking"},
-    {"ticker": "KCB.NR",  "name": "KCB Group",                "sector": "Banking"},
-    {"ticker": "COOP.NR", "name": "Co-operative Bank",        "sector": "Banking"},
-    {"ticker": "ABSA.NR", "name": "ABSA Bank Kenya",          "sector": "Banking"},
-    {"ticker": "NCBA.NR", "name": "NCBA Group",               "sector": "Banking"},
-    {"ticker": "DTK.NR",  "name": "Diamond Trust Bank",       "sector": "Banking"},
-    {"ticker": "SCBK.NR", "name": "Standard Chartered Kenya", "sector": "Banking"},
-    {"ticker": "I&M.NR",  "name": "I&M Group",                "sector": "Banking"},
-    {"ticker": "HF.NR",   "name": "HF Group",                 "sector": "Banking"},
-    {"ticker": "SBIC.NR", "name": "Stanbic Holdings",         "sector": "Banking"},
-    # Telecom
-    {"ticker": "SCOM.NR", "name": "Safaricom PLC",            "sector": "Telecom"},
-    # Consumer
-    {"ticker": "EABL.NR", "name": "East African Breweries",   "sector": "Consumer"},
-    {"ticker": "BAT.NR",  "name": "BAT Kenya",                "sector": "Consumer"},
-    {"ticker": "UNGA.NR", "name": "Unga Group",               "sector": "Consumer"},
-    {"ticker": "KCGM.NR", "name": "Kenya Grange Vehicle",     "sector": "Consumer"},
-    # Insurance
-    {"ticker": "BRIT.NR", "name": "Britam Holdings",          "sector": "Insurance"},
-    {"ticker": "JUB.NR",  "name": "Jubilee Holdings",         "sector": "Insurance"},
-    {"ticker": "CIC.NR",  "name": "CIC Insurance Group",      "sector": "Insurance"},
-    {"ticker": "KNRE.NR", "name": "Kenya Re",                 "sector": "Insurance"},
-    # Energy
-    {"ticker": "TOTL.NR", "name": "TotalEnergies Kenya",      "sector": "Energy"},
-    {"ticker": "KENOL.NR","name": "KenolKobil",               "sector": "Energy"},
-    # Manufacturing
-    {"ticker": "BAMB.NR", "name": "Bamburi Cement",           "sector": "Manufacturing"},
-    {"ticker": "ARM.NR",  "name": "ARM Cement",               "sector": "Manufacturing"},
-    {"ticker": "CABL.NR", "name": "East African Cables",      "sector": "Manufacturing"},
-    {"ticker": "BERG.NR", "name": "Bergougnan EA",            "sector": "Manufacturing"},
-    # Agriculture
-    {"ticker": "SASN.NR", "name": "Sasini",                   "sector": "Agriculture"},
-    {"ticker": "KAPC.NR", "name": "Kapchorua Tea",            "sector": "Agriculture"},
-    {"ticker": "LIMT.NR", "name": "Limuru Tea",               "sector": "Agriculture"},
-    {"ticker": "TPSE.NR", "name": "Trans-Century",            "sector": "Agriculture"},
-    # Investment
-    {"ticker": "CTUM.NR", "name": "Centum Investment",        "sector": "Investment"},
-    {"ticker": "NSE.NR",  "name": "Nairobi Securities Exchange","sector": "Investment"},
+    # ── Banking (11) ──────────────────────────────────────────────────────
+    {"ticker": "EQTY", "name": "Equity Group Holdings",       "sector": "Banking"},
+    {"ticker": "KCB",  "name": "KCB Group",                   "sector": "Banking"},
+    {"ticker": "COOP", "name": "Co-operative Bank of Kenya",  "sector": "Banking"},
+    {"ticker": "ABSA", "name": "ABSA Bank Kenya",             "sector": "Banking"},
+    {"ticker": "NCBA", "name": "NCBA Group",                  "sector": "Banking"},
+    {"ticker": "DTK",  "name": "Diamond Trust Bank Kenya",    "sector": "Banking"},
+    {"ticker": "SCBK", "name": "Standard Chartered Kenya",    "sector": "Banking"},
+    {"ticker": "IMH",  "name": "I & M Holdings",              "sector": "Banking"},
+    {"ticker": "HFCK", "name": "HF Group",                    "sector": "Banking"},
+    {"ticker": "SBIC", "name": "Stanbic Holdings",            "sector": "Banking"},
+    {"ticker": "BKG",  "name": "BK Group",                    "sector": "Banking"},
+    # ── Telecommunication (1) ─────────────────────────────────────────────
+    {"ticker": "SCOM", "name": "Safaricom",                   "sector": "Telecommunication"},
+    # ── Manufacturing & Allied (8) ────────────────────────────────────────
+    {"ticker": "EABL", "name": "East African Breweries",      "sector": "Manufacturing & Allied"},
+    {"ticker": "BAT",  "name": "British American Tobacco Kenya","sector": "Manufacturing & Allied"},
+    {"ticker": "UNGA", "name": "Unga Group",                  "sector": "Manufacturing & Allied"},
+    {"ticker": "AMAC", "name": "Africa Mega Agricorp",        "sector": "Manufacturing & Allied"},
+    {"ticker": "CARB", "name": "Carbacid Investments",        "sector": "Manufacturing & Allied"},
+    {"ticker": "BOC",  "name": "BOC Kenya",                   "sector": "Manufacturing & Allied"},
+    {"ticker": "FTGH", "name": "Flame Tree Group Holdings",   "sector": "Manufacturing & Allied"},
+    {"ticker": "SKL",  "name": "Shri Krishana Overseas",      "sector": "Manufacturing & Allied"},
+    # ── Insurance (6) ─────────────────────────────────────────────────────
+    {"ticker": "JUB",  "name": "Jubilee Holdings",            "sector": "Insurance"},
+    {"ticker": "BRIT", "name": "Britam Holdings",             "sector": "Insurance"},
+    {"ticker": "CIC",  "name": "CIC Insurance Group",         "sector": "Insurance"},
+    {"ticker": "KNRE", "name": "Kenya Re Insurance",          "sector": "Insurance"},
+    {"ticker": "LBTY", "name": "Liberty Kenya Holdings",      "sector": "Insurance"},
+    {"ticker": "SLAM", "name": "Sanlam Kenya",                "sector": "Insurance"},
+    # ── Energy & Petroleum (6) ────────────────────────────────────────────
+    {"ticker": "KEGN", "name": "KenGen",                      "sector": "Energy & Petroleum"},
+    {"ticker": "KPLC", "name": "Kenya Power & Lighting",      "sector": "Energy & Petroleum"},
+    {"ticker": "TOTL", "name": "TotalEnergies Marketing Kenya","sector": "Energy & Petroleum"},
+    {"ticker": "UMME", "name": "Umeme",                       "sector": "Energy & Petroleum"},
+    {"ticker": "KENOL","name": "Rubis Energy Kenya",          "sector": "Energy & Petroleum"},
+    {"ticker": "KPC",  "name": "Kenya Pipeline Company",      "sector": "Energy & Petroleum"},
+    # ── Construction & Allied (3) ─────────────────────────────────────────
+    {"ticker": "BAMB", "name": "Bamburi Cement",              "sector": "Construction & Allied"},
+    {"ticker": "PORT", "name": "East African Portland Cement","sector": "Construction & Allied"},
+    {"ticker": "CRWN", "name": "Crown Paints Kenya",          "sector": "Construction & Allied"},
+    # ── Agricultural (5) ──────────────────────────────────────────────────
+    {"ticker": "SASN", "name": "Sasini",                      "sector": "Agricultural"},
+    {"ticker": "KAPC", "name": "Kapchorua Tea Kenya",         "sector": "Agricultural"},
+    {"ticker": "LIMT", "name": "Limuru Tea",                  "sector": "Agricultural"},
+    {"ticker": "KUKZ", "name": "Kakuzi",                      "sector": "Agricultural"},
+    {"ticker": "EGAD", "name": "Eaagads",                     "sector": "Agricultural"},
+    # ── Commercial & Services (10) ────────────────────────────────────────
+    {"ticker": "TPSE", "name": "TPS Eastern Africa (Serena)", "sector": "Commercial & Services"},
+    {"ticker": "NMG",  "name": "Nation Media Group",          "sector": "Commercial & Services"},
+    {"ticker": "SGL",  "name": "Standard Group",              "sector": "Commercial & Services"},
+    {"ticker": "EVRD", "name": "Eveready East Africa",        "sector": "Commercial & Services"},
+    {"ticker": "XPRS", "name": "Express Kenya",               "sector": "Commercial & Services"},
+    {"ticker": "SMER", "name": "Sameer Africa",               "sector": "Commercial & Services"},
+    {"ticker": "LKL",  "name": "Longhorn Publishers",         "sector": "Commercial & Services"},
+    {"ticker": "NBV",  "name": "Nairobi Business Ventures",   "sector": "Commercial & Services"},
+    {"ticker": "UCHM", "name": "Uchumi Supermarket",          "sector": "Commercial & Services"},
+    {"ticker": "KQ",   "name": "Kenya Airways",               "sector": "Commercial & Services"},
+    # ── Automobiles & Accessories (1) ─────────────────────────────────────
+    {"ticker": "CGEN", "name": "Car & General Kenya",         "sector": "Automobiles & Accessories"},
+    # ── Investment (3) ────────────────────────────────────────────────────
+    {"ticker": "CTUM", "name": "Centum Investment",           "sector": "Investment"},
+    {"ticker": "HAFR", "name": "Home Afrika",                 "sector": "Investment"},
+    {"ticker": "OCH",  "name": "Olympia Capital Holdings",    "sector": "Investment"},
+    # ── Investment Services (1) ───────────────────────────────────────────
+    {"ticker": "NSE",  "name": "Nairobi Securities Exchange", "sector": "Investment Services"},
 ]
 
 _score_cache: dict = {}

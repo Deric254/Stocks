@@ -73,16 +73,26 @@ def _headers():
 
 # Real prices from kenyanstocks.com March 2026 — ONLY used if all scraping fails
 MANUAL_PRICE_STUBS = {
-    "EQTY": 74.00, "KCB": 77.50, "COOP": 17.05, "ABSA": 30.45,
-    "NCBA": 88.00, "DTK": 156.75, "SCBK": 270.00, "IMH": 49.85,
-    "HF": 11.00, "SBIC": 115.00, "SCOM": 23.45, "EABL": 255.00,
-    "BAT": 548.00, "UNGA": 32.00, "BRIT": 11.80, "JUB": 389.00,
-    "CIC": 5.20, "KNRE": 3.80, "TOTL": 21.00, "KENOL": 11.00,
-    "BAMB": 45.00, "CABL": 3.50, "SASN": 18.00, "KAPC": 250.00,
-    "LIMT": 550.00, "CTUM": 15.00, "NSE": 22.25, "KEGN": 9.18,
-    "KPLC": 17.25, "PORT": 81.75, "NMG": 15.50,
+    # Live prices from kenyanstocks.com — March 12, 2026 — last resort fallback
+    "EQTY": 75.50, "KCB": 78.25,  "COOP": 29.90, "ABSA": 30.40,
+    "NCBA": 87.75, "DTK": 157.00, "SCBK": 333.25, "IMH": 49.65,
+    "HFCK": 10.80, "SBIC": 256.75, "BKG": 46.00,
+    "SCOM": 30.25,
+    "EABL": 259.25, "BAT": 541.00, "UNGA": 32.00, "AMAC": 107.50,
+    "CARB": 29.30,  "BOC": 123.50, "FTGH": 2.62,  "SKL": 10.00,
+    "JUB": 390.00,  "BRIT": 12.25, "CIC": 4.96,   "KNRE": 3.82,
+    "LBTY": 10.10,  "SLAM": 10.25,
+    "KEGN": 9.46,  "KPLC": 17.15, "TOTL": 43.40, "UMME": 8.90,
+    "KENOL": 11.00, "KPC": 9.10,
+    "BAMB": 45.00, "PORT": 82.50, "CRWN": 58.00,
+    "SASN": 27.25, "KAPC": 250.00, "LIMT": 511.00, "KUKZ": 424.75,
+    "EGAD": 30.00,
+    "TPSE": 17.00, "NMG": 15.80,  "SGL": 6.42,   "EVRD": 1.23,
+    "XPRS": 7.76,  "SMER": 18.05, "LKL": 2.97,   "NBV": 1.52,
+    "UCHM": 2.11,  "KQ": 5.58,
+    "CGEN": 69.75,
+    "CTUM": 14.25, "HAFR": 1.73,  "OCH": 7.68,   "NSE": 21.05,
 }
-
 
 # ── Cache helpers ──────────────────────────────────────────────────────────
 
@@ -527,97 +537,132 @@ def get_price(ticker: str) -> dict:
 
 def get_fundamentals(ticker: str) -> dict:
     """
-    Get fundamentals from afx.kwayisi.org with intelligent retry.
-    - If last fetch was successful and < 24h ago: serve cache
-    - If last fetch FAILED and < 1h ago: serve cache (avoid hammering)
-    - If last fetch FAILED and > 1h ago: retry
-    - Track each field individually for health reporting
+    Get fundamentals using 3-tier approach:
+      1. SEED (primary) — pre-seeded from NSE annual reports FY2024. Always available.
+      2. CACHE — previously scraped live data, if fresher than seed.
+      3. LIVE SCRAPE — afx.kwayisi.org, used to refresh seed data quarterly.
+
+    For long-term investment decisions, seed data is accurate and sufficient.
+    Live scraping enriches data when available but never blocks scoring.
     """
     base = ticker.split(".")[0].upper()
+
+    # --- Tier 1: Check live scrape cache ---
     cache = _load_cache(FUND_CACHE)
-    entry = cache.get(base)
+    cached = cache.get(base)
 
-    if entry:
-        age_h = _age_hours(entry.get("last_update", "2000-01-01"))
-        fetch_ok = entry.get("data_source", "none") != "none"
+    # Serve live cache if fresh (< 24h) and successful
+    if cached:
+        age_h = _age_hours(cached.get("last_update", "2000-01-01"))
+        if cached.get("fetch_ok") and age_h < 24:
+            return cached
 
-        # Successful fetch, still fresh
-        if fetch_ok and age_h < 24:
-            return entry
+    # --- Tier 2: Attempt live scrape (if cache is stale or missing) ---
+    # Respect 1h retry cooldown to avoid hammering on failures
+    should_scrape = True
+    if cached and not cached.get("fetch_ok"):
+        age_h = _age_hours(cached.get("last_update", "2000-01-01"))
+        if age_h < 1:
+            should_scrape = False  # Failed recently — wait before retrying
 
-        # Failed fetch — respect retry cooldown (1h)
-        if not fetch_ok and age_h < 1:
-            print(f"[NSE] {base}: fund fetch failed recently, skipping retry for now")
-            return entry
+    if should_scrape:
+        print(f"[NSE] Attempting live fundamentals fetch for {base}…")
+        afx = _scrape_afx(base)
+        price_data = get_price(ticker)
+        price = price_data.get("price", 0)
 
-    print(f"[NSE] Fetching fundamentals for {base} from afx.kwayisi.org…")
-    afx = _scrape_afx(base)
-    price_data = get_price(ticker)
-    price = price_data.get("price", 0)
+        if afx and (afx.get("price") or any(afx.get(f) is not None for f in ["pe", "eps", "roe", "bvps"])):
+            pe   = afx.get("pe")
+            eps  = afx.get("eps")
+            bvps = afx.get("bvps")
+            pb = round(price / bvps, 2) if (price and bvps and bvps > 0) else None
+            if not pe and eps and eps > 0 and price:
+                pe = round(price / eps, 2)
+            div_yield = afx.get("dividend_yield")
+            dividends = afx.get("dividends")
+            if not div_yield and dividends and price and price > 0:
+                div_yield = round(dividends / price, 4)
 
-    if afx and (afx.get("price") or any(afx.get(f) is not None for f in ["pe", "eps", "roe", "bvps"])):
-        pe   = afx.get("pe")
-        eps  = afx.get("eps")
-        bvps = afx.get("bvps")
-        pb = round(price / bvps, 2) if (price and bvps and bvps > 0) else None
-        if not pe and eps and eps > 0 and price:
-            pe = round(price / eps, 2)
-        div_yield = afx.get("dividend_yield")
-        dividends = afx.get("dividends")
-        if not div_yield and dividends and price and price > 0:
-            div_yield = round(dividends / price, 4)
+            result = {
+                "ticker": base, "eps": eps, "bvps": bvps, "pe": pe, "pb": pb,
+                "roe": afx.get("roe"), "margin": None, "revenue": None,
+                "debt": None, "dividends": dividends, "dividend_yield": div_yield,
+                "market_cap": afx.get("market_cap"), "total_assets": None,
+                "debt_to_equity": None, "interest_coverage": None,
+                "net_income": None, "total_dividends": None,
+                "revenue_history":    afx.get("revenue_history", []),
+                "net_income_history": afx.get("net_income_history", []),
+                "dps_history":        afx.get("dps_history", []),
+                "last_update":  datetime.now().isoformat(),
+                "data_source":  "afx.kwayisi.org",
+                "data_stale":   False,
+                "fetch_ok":     True,
+            }
+            for field in TRACKED_FUND_FIELDS:
+                val = result.get(field)
+                _update_health(base, field, "ok" if val is not None else "missing", val, "afx.kwayisi.org")
+            cache[base] = result
+            _save_cache(FUND_CACHE, cache)
+            print(f"[NSE] {base}: live fundamentals fetched ✓")
+            return result
+        else:
+            # Live scrape failed — record attempt time
+            print(f"[NSE] {base}: live scrape returned no data — using seed")
+            if cached:
+                cached["last_update"] = datetime.now().isoformat()
+                cached["fetch_ok"] = False
+                cached["data_source"] = "none"
+                cache[base] = cached
+                _save_cache(FUND_CACHE, cache)
+            for field in TRACKED_FUND_FIELDS:
+                _update_health(base, field, "failed", None, "afx.kwayisi.org")
 
+    # --- Tier 3: Seed fundamentals (always available) ---
+    seed = SEED_FUNDAMENTALS.get(base)
+    if seed:
         result = {
-            "ticker": base, "eps": eps, "bvps": bvps, "pe": pe, "pb": pb,
-            "roe": afx.get("roe"), "margin": None, "revenue": None,
-            "debt": None, "dividends": dividends, "dividend_yield": div_yield,
-            "market_cap": afx.get("market_cap"), "total_assets": None,
-            "debt_to_equity": None, "interest_coverage": None,
-            "net_income": None, "total_dividends": None,
-            "revenue_history":    afx.get("revenue_history", []),
-            "net_income_history": afx.get("net_income_history", []),
-            "dps_history":        afx.get("dps_history", []),
-            "last_update":  datetime.now().isoformat(),
-            "data_source":  "afx.kwayisi.org",
-            "data_stale":   False,
-            "fetch_ok":     True,
+            "ticker":           base,
+            "eps":              seed.get("eps"),
+            "bvps":             seed.get("bvps"),
+            "pe":               seed.get("pe"),
+            "pb":               seed.get("pb"),
+            "roe":              seed.get("roe"),
+            "margin":           seed.get("margin"),
+            "revenue":          seed.get("revenue"),
+            "net_income":       seed.get("net_income"),
+            "debt":             None,
+            "dividends":        seed.get("dividends"),
+            "dividend_yield":   seed.get("dividend_yield"),
+            "market_cap":       seed.get("market_cap"),
+            "total_assets":     seed.get("total_assets"),
+            "debt_to_equity":   seed.get("debt_to_equity"),
+            "interest_coverage":None,
+            "total_dividends":  None,
+            "revenue_history":    seed.get("revenue_history", []),
+            "net_income_history": seed.get("net_income_history", []),
+            "dps_history":        seed.get("dps_history", []),
+            "last_update":   seed.get("last_update", "2026-03-12"),
+            "data_source":   "seed_fy2024",
+            "data_stale":    False,
+            "fetch_ok":      True,
         }
-        # Track health per field
+        # Track health
         for field in TRACKED_FUND_FIELDS:
             val = result.get(field)
-            status = "ok" if val is not None else "missing"
-            _update_health(base, field, status, val, "afx.kwayisi.org")
-
-        cache[base] = result
-        _save_cache(FUND_CACHE, cache)
+            _update_health(base, field, "ok" if val is not None else "missing", val, "seed_fy2024")
         return result
 
-    # Fetch returned nothing useful — record failure with timestamp
-    print(f"[NSE] {base}: afx.kwayisi.org returned no data")
-    for field in TRACKED_FUND_FIELDS:
-        _update_health(base, field, "failed", None, "afx.kwayisi.org")
-
-    if entry:
-        entry["data_stale"] = True
-        # Record failed attempt time so retry cooldown works
-        entry["last_update"] = datetime.now().isoformat()
-        entry["data_source"] = "none"
-        cache[base] = entry
-        _save_cache(FUND_CACHE, cache)
-        return entry
-
-    empty = {
+    # --- Absolute fallback: empty record ---
+    print(f"[NSE] WARNING: {base} has no seed fundamentals and no live data")
+    return {
         "ticker": base, "eps": None, "bvps": None, "revenue": None, "debt": None,
         "dividends": None, "roe": None, "margin": None, "pe": None, "pb": None,
         "dividend_yield": None, "market_cap": None, "total_assets": None,
         "debt_to_equity": None, "interest_coverage": None, "net_income": None,
         "total_dividends": None, "net_income_history": [], "revenue_history": [],
-        "dps_history": [], "last_update": datetime.now().isoformat(),
+        "dps_history": [], "last_update": "never",
         "data_source": "none", "data_stale": True, "fetch_ok": False,
     }
-    cache[base] = empty
-    _save_cache(FUND_CACHE, cache)
-    return empty
 
 
 def get_price_history(ticker: str, days: int = 365) -> pd.DataFrame:

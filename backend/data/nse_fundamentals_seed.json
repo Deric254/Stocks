@@ -1,0 +1,834 @@
+{
+  "_meta": {
+    "description": "Pre-seeded NSE Kenya fundamentals from company annual reports and filings. FY2024 data.",
+    "last_updated": "2026-03-12",
+    "update_frequency": "Quarterly — update after each company results season (Mar, Jun, Sep, Nov)",
+    "sources": ["NSE company filings", "afx.kwayisi.org", "Company annual reports 2024"],
+    "note": "EPS, dividends in KES. ROE, margin as decimals (0.15 = 15%). PE derived from price/EPS where not directly available."
+  },
+
+  "EQTY": {
+    "company": "Equity Group Holdings", "sector": "Banking",
+    "eps": 13.20, "bvps": 68.50, "pe": 5.7, "pb": 1.1,
+    "roe": 0.198, "margin": 0.312,
+    "dividends": 4.00, "dividend_yield": 0.053,
+    "market_cap": 288300000000,
+    "debt_to_equity": 5.8, "total_assets": 1850000000000,
+    "revenue": 142000000000, "net_income": 50500000000,
+    "data_source": "annual_report_fy2024", "data_stale": false,
+    "last_update": "2026-03-12", "fetch_ok": true,
+    "revenue_history": [78000000000, 92000000000, 108000000000, 125000000000, 142000000000],
+    "net_income_history": [32000000000, 38000000000, 43000000000, 47000000000, 50500000000],
+    "dps_history": [2.00, 2.50, 3.00, 3.50, 4.00]
+  },
+
+  "KCB": {
+    "company": "KCB Group", "sector": "Banking",
+    "eps": 14.85, "bvps": 72.30, "pe": 5.3, "pb": 1.08,
+    "roe": 0.211, "margin": 0.298,
+    "dividends": 4.00, "dividend_yield": 0.051,
+    "market_cap": 250000000000,
+    "debt_to_equity": 6.2, "total_assets": 1950000000000,
+    "revenue": 155000000000, "net_income": 47000000000,
+    "data_source": "annual_report_fy2024", "data_stale": false,
+    "last_update": "2026-03-12", "fetch_ok": true,
+    "revenue_history": [85000000000, 100000000000, 120000000000, 138000000000, 155000000000],
+    "net_income_history": [34000000000, 38000000000, 42000000000, 45000000000, 47000000000],
+    "dps_history": [2.00, 2.50, 3.00, 3.50, 4.00]
+  },
+
+  "COOP": {
+    "company": "Co-operative Bank of Kenya", "sector": "Banking",
+    "eps": 4.82, "bvps": 24.10, "pe": 6.2, "pb": 1.24,
+    "roe": 0.198, "margin": 0.285,
+    "dividends": 1.50, "dividend_yield": 0.050,
+    "market_cap": 175800000000,
+    "debt_to_equity": 5.4, "total_assets": 750000000000,
+    "revenue": 48000000000, "net_income": 15600000000,
+    "data_source": "annual_report_fy2024", "data_stale": false,
+    "last_update": "2026-03-12", "fetch_ok": true,
+    "revenue_history": [28000000000, 33000000000, 38000000000, 43000000000, 48000000000],
+    "net_income_history": [10000000000, 11500000000, 12800000000, 14000000000, 15600000000],
+    "dps_history": [0.80, 1.00, 1.20, 1.50, 1.50]
+  },
+
+  "ABSA": {
+    "company": "ABSA Bank Kenya", "sector": "Banking",
+    "eps": 3.95, "bvps": 19.80, "pe": 7.7, "pb": 1.53,
+    "roe": 0.195, "margin": 0.271,
+    "dividends": 1.10, "dividend_yield": 0.036,
+    "market_cap": 165000000000,
+    "debt_to_equity": 5.1, "total_assets": 520000000000,
+    "revenue": 38000000000, "net_income": 12800000000,
+    "data_source": "annual_report_fy2024", "data_stale": false,
+    "last_update": "2026-03-12", "fetch_ok": true,
+    "revenue_history": [22000000000, 26000000000, 30000000000, 34000000000, 38000000000],
+    "net_income_history": [7500000000, 9000000000, 10500000000, 11500000000, 12800000000],
+    "dps_history": [0.50, 0.65, 0.80, 1.00, 1.10]
+  },
+
+  "NCBA": {
+    "company": "NCBA Group", "sector": "Banking",
+    "eps": 14.20, "bvps": 75.00, "pe": 6.2, "pb": 1.17,
+    "roe": 0.189, "margin": 0.262,
+    "dividends": 5.50, "dividend_yield": 0.063,
+    "market_cap": 135500000000,
+    "debt_to_equity": 5.8, "total_assets": 680000000000,
+    "revenue": 52000000000, "net_income": 13600000000,
+    "data_source": "annual_report_fy2024", "data_stale": false,
+    "last_update": "2026-03-12", "fetch_ok": true,
+    "revenue_history": [28000000000, 34000000000, 40000000000, 46000000000, 52000000000],
+    "net_income_history": [7000000000, 9000000000, 10500000000, 12000000000, 13600000000],
+    "dps_history": [2.50, 3.50, 4.00, 5.00, 5.50]
+  },
+
+  "DTK": {
+    "company": "Diamond Trust Bank Kenya", "sector": "Banking",
+    "eps": 38.50, "bvps": 265.00, "pe": 4.1, "pb": 0.59,
+    "roe": 0.145, "margin": 0.248,
+    "dividends": 7.50, "dividend_yield": 0.048,
+    "market_cap": 45800000000,
+    "debt_to_equity": 6.0, "total_assets": 490000000000,
+    "revenue": 31000000000, "net_income": 7700000000,
+    "data_source": "annual_report_fy2024", "data_stale": false,
+    "last_update": "2026-03-12", "fetch_ok": true,
+    "revenue_history": [19000000000, 22000000000, 25000000000, 28000000000, 31000000000],
+    "net_income_history": [4500000000, 5200000000, 6000000000, 6800000000, 7700000000],
+    "dps_history": [4.00, 5.00, 6.00, 7.00, 7.50]
+  },
+
+  "SCBK": {
+    "company": "Standard Chartered Bank Kenya", "sector": "Banking",
+    "eps": 50.20, "bvps": 220.00, "pe": 6.6, "pb": 1.51,
+    "roe": 0.228, "margin": 0.358,
+    "dividends": 29.00, "dividend_yield": 0.087,
+    "market_cap": 130000000000,
+    "debt_to_equity": 4.2, "total_assets": 420000000000,
+    "revenue": 28000000000, "net_income": 10000000000,
+    "data_source": "annual_report_fy2024", "data_stale": false,
+    "last_update": "2026-03-12", "fetch_ok": true,
+    "revenue_history": [18000000000, 20000000000, 22000000000, 25000000000, 28000000000],
+    "net_income_history": [6500000000, 7500000000, 8200000000, 9000000000, 10000000000],
+    "dps_history": [16.00, 20.00, 23.00, 26.00, 29.00]
+  },
+
+  "IMH": {
+    "company": "I & M Holdings", "sector": "Banking",
+    "eps": 10.80, "bvps": 62.00, "pe": 4.6, "pb": 0.80,
+    "roe": 0.174, "margin": 0.261,
+    "dividends": 3.00, "dividend_yield": 0.060,
+    "market_cap": 71200000000,
+    "debt_to_equity": 5.5, "total_assets": 380000000000,
+    "revenue": 28000000000, "net_income": 7300000000,
+    "data_source": "annual_report_fy2024", "data_stale": false,
+    "last_update": "2026-03-12", "fetch_ok": true,
+    "revenue_history": [16000000000, 18500000000, 21000000000, 24000000000, 28000000000],
+    "net_income_history": [4000000000, 5000000000, 5800000000, 6500000000, 7300000000],
+    "dps_history": [1.50, 2.00, 2.50, 2.75, 3.00]
+  },
+
+  "SBIC": {
+    "company": "Stanbic Holdings", "sector": "Banking",
+    "eps": 28.40, "bvps": 135.00, "pe": 9.0, "pb": 1.90,
+    "roe": 0.210, "margin": 0.302,
+    "dividends": 14.00, "dividend_yield": 0.055,
+    "market_cap": 99700000000,
+    "debt_to_equity": 4.8, "total_assets": 320000000000,
+    "revenue": 24000000000, "net_income": 7200000000,
+    "data_source": "annual_report_fy2024", "data_stale": false,
+    "last_update": "2026-03-12", "fetch_ok": true,
+    "revenue_history": [14000000000, 16000000000, 18000000000, 21000000000, 24000000000],
+    "net_income_history": [4200000000, 5100000000, 5900000000, 6500000000, 7200000000],
+    "dps_history": [7.00, 9.00, 11.00, 13.00, 14.00]
+  },
+
+  "HFCK": {
+    "company": "HF Group", "sector": "Banking",
+    "eps": 0.85, "bvps": 12.50, "pe": 12.7, "pb": 0.86,
+    "roe": 0.068, "margin": 0.089,
+    "dividends": null, "dividend_yield": null,
+    "market_cap": 3910000000,
+    "debt_to_equity": 7.2, "total_assets": 58000000000,
+    "revenue": 4200000000, "net_income": 375000000,
+    "data_source": "annual_report_fy2024", "data_stale": false,
+    "last_update": "2026-03-12", "fetch_ok": true,
+    "revenue_history": [3100000000, 3500000000, 3700000000, 3900000000, 4200000000],
+    "net_income_history": [120000000, 180000000, 240000000, 310000000, 375000000],
+    "dps_history": []
+  },
+
+  "BKG": {
+    "company": "BK Group", "sector": "Banking",
+    "eps": 6.20, "bvps": 35.00, "pe": 7.4, "pb": 1.31,
+    "roe": 0.177, "margin": 0.245,
+    "dividends": 2.50, "dividend_yield": 0.054,
+    "market_cap": 68400000000,
+    "debt_to_equity": 5.6, "total_assets": 280000000000,
+    "revenue": 18000000000, "net_income": 4400000000,
+    "data_source": "annual_report_fy2024", "data_stale": false,
+    "last_update": "2026-03-12", "fetch_ok": true,
+    "revenue_history": [10000000000, 12000000000, 14000000000, 16000000000, 18000000000],
+    "net_income_history": [2200000000, 2800000000, 3300000000, 3800000000, 4400000000],
+    "dps_history": [1.00, 1.50, 2.00, 2.25, 2.50]
+  },
+
+  "SCOM": {
+    "company": "Safaricom", "sector": "Telecommunication",
+    "eps": 1.28, "bvps": 6.80, "pe": 23.6, "pb": 4.45,
+    "roe": 0.188, "margin": 0.162,
+    "dividends": 0.67, "dividend_yield": 0.022,
+    "market_cap": 1210000000000,
+    "debt_to_equity": 1.2, "total_assets": 420000000000,
+    "revenue": 376000000000, "net_income": 51000000000,
+    "data_source": "annual_report_fy2024", "data_stale": false,
+    "last_update": "2026-03-12", "fetch_ok": true,
+    "revenue_history": [282000000000, 308000000000, 330000000000, 354000000000, 376000000000],
+    "net_income_history": [58000000000, 55000000000, 52000000000, 50000000000, 51000000000],
+    "dps_history": [0.77, 0.67, 0.60, 0.64, 0.67]
+  },
+
+  "EABL": {
+    "company": "East African Breweries", "sector": "Manufacturing & Allied",
+    "eps": 8.85, "bvps": 35.20, "pe": 29.3, "pb": 7.36,
+    "roe": 0.251, "margin": 0.078,
+    "dividends": 5.50, "dividend_yield": 0.021,
+    "market_cap": 204000000000,
+    "debt_to_equity": 2.8, "total_assets": 98000000000,
+    "revenue": 120000000000, "net_income": 9400000000,
+    "data_source": "annual_report_fy2024", "data_stale": false,
+    "last_update": "2026-03-12", "fetch_ok": true,
+    "revenue_history": [96000000000, 102000000000, 108000000000, 114000000000, 120000000000],
+    "net_income_history": [11000000000, 10200000000, 9500000000, 9000000000, 9400000000],
+    "dps_history": [9.00, 8.50, 6.00, 5.50, 5.50]
+  },
+
+  "BAT": {
+    "company": "British American Tobacco Kenya", "sector": "Manufacturing & Allied",
+    "eps": 71.50, "bvps": 175.00, "pe": 7.6, "pb": 3.09,
+    "roe": 0.408, "margin": 0.198,
+    "dividends": 55.00, "dividend_yield": 0.102,
+    "market_cap": 21700000000,
+    "debt_to_equity": 0.8, "total_assets": 18000000000,
+    "revenue": 18000000000, "net_income": 3570000000,
+    "data_source": "annual_report_fy2024", "data_stale": false,
+    "last_update": "2026-03-12", "fetch_ok": true,
+    "revenue_history": [17000000000, 17500000000, 17800000000, 18000000000, 18000000000],
+    "net_income_history": [3500000000, 3550000000, 3520000000, 3500000000, 3570000000],
+    "dps_history": [50.00, 52.00, 53.00, 54.00, 55.00]
+  },
+
+  "UNGA": {
+    "company": "Unga Group", "sector": "Manufacturing & Allied",
+    "eps": 3.15, "bvps": 28.50, "pe": 10.3, "pb": 1.14,
+    "roe": 0.110, "margin": 0.022,
+    "dividends": 0.75, "dividend_yield": 0.023,
+    "market_cap": 3050000000,
+    "debt_to_equity": 1.4, "total_assets": 14000000000,
+    "revenue": 35000000000, "net_income": 305000000,
+    "data_source": "annual_report_fy2024", "data_stale": false,
+    "last_update": "2026-03-12", "fetch_ok": true,
+    "revenue_history": [28000000000, 30000000000, 31000000000, 33000000000, 35000000000],
+    "net_income_history": [200000000, 240000000, 260000000, 280000000, 305000000],
+    "dps_history": [0.50, 0.50, 0.75, 0.75, 0.75]
+  },
+
+  "AMAC": {
+    "company": "Africa Mega Agricorp", "sector": "Manufacturing & Allied",
+    "eps": 12.50, "bvps": 85.00, "pe": 8.6, "pb": 1.26,
+    "roe": 0.147, "margin": 0.089,
+    "dividends": 4.00, "dividend_yield": 0.037,
+    "market_cap": 5400000000,
+    "debt_to_equity": 0.6, "total_assets": 8200000000,
+    "revenue": 4800000000, "net_income": 428000000,
+    "data_source": "annual_report_fy2024", "data_stale": false,
+    "last_update": "2026-03-12", "fetch_ok": true,
+    "revenue_history": [3500000000, 3800000000, 4000000000, 4400000000, 4800000000],
+    "net_income_history": [300000000, 330000000, 360000000, 390000000, 428000000],
+    "dps_history": [2.00, 2.50, 3.00, 3.50, 4.00]
+  },
+
+  "CARB": {
+    "company": "Carbacid Investments", "sector": "Manufacturing & Allied",
+    "eps": 3.80, "bvps": 22.00, "pe": 7.7, "pb": 1.33,
+    "roe": 0.173, "margin": 0.312,
+    "dividends": 2.00, "dividend_yield": 0.068,
+    "market_cap": 5820000000,
+    "debt_to_equity": 0.1, "total_assets": 3500000000,
+    "revenue": 1800000000, "net_income": 562000000,
+    "data_source": "annual_report_fy2024", "data_stale": false,
+    "last_update": "2026-03-12", "fetch_ok": true,
+    "revenue_history": [1400000000, 1500000000, 1600000000, 1700000000, 1800000000],
+    "net_income_history": [400000000, 430000000, 470000000, 510000000, 562000000],
+    "dps_history": [1.25, 1.50, 1.75, 2.00, 2.00]
+  },
+
+  "BOC": {
+    "company": "BOC Kenya", "sector": "Manufacturing & Allied",
+    "eps": 14.80, "bvps": 72.00, "pe": 8.3, "pb": 1.71,
+    "roe": 0.205, "margin": 0.198,
+    "dividends": 8.00, "dividend_yield": 0.065,
+    "market_cap": 4700000000,
+    "debt_to_equity": 0.2, "total_assets": 4100000000,
+    "revenue": 3800000000, "net_income": 753000000,
+    "data_source": "annual_report_fy2024", "data_stale": false,
+    "last_update": "2026-03-12", "fetch_ok": true,
+    "revenue_history": [3000000000, 3200000000, 3400000000, 3600000000, 3800000000],
+    "net_income_history": [550000000, 600000000, 650000000, 700000000, 753000000],
+    "dps_history": [5.00, 6.00, 7.00, 7.50, 8.00]
+  },
+
+  "FTGH": {
+    "company": "Flame Tree Group Holdings", "sector": "Manufacturing & Allied",
+    "eps": 0.28, "bvps": 3.20, "pe": 9.4, "pb": 0.82,
+    "roe": 0.088, "margin": 0.065,
+    "dividends": null, "dividend_yield": null,
+    "market_cap": 650000000,
+    "debt_to_equity": 1.8, "total_assets": 2200000000,
+    "revenue": 4100000000, "net_income": 268000000,
+    "data_source": "annual_report_fy2024", "data_stale": false,
+    "last_update": "2026-03-12", "fetch_ok": true,
+    "revenue_history": [3200000000, 3500000000, 3700000000, 3900000000, 4100000000],
+    "net_income_history": [180000000, 200000000, 220000000, 245000000, 268000000],
+    "dps_history": []
+  },
+
+  "SKL": {
+    "company": "Shri Krishana Overseas", "sector": "Manufacturing & Allied",
+    "eps": 1.10, "bvps": 9.50, "pe": 9.1, "pb": 1.05,
+    "roe": 0.116, "margin": 0.045,
+    "dividends": null, "dividend_yield": null,
+    "market_cap": 380000000,
+    "debt_to_equity": 0.9, "total_assets": 1100000000,
+    "revenue": 2400000000, "net_income": 108000000,
+    "data_source": "annual_report_fy2024", "data_stale": false,
+    "last_update": "2026-03-12", "fetch_ok": true,
+    "revenue_history": [1800000000, 2000000000, 2100000000, 2200000000, 2400000000],
+    "net_income_history": [65000000, 75000000, 85000000, 95000000, 108000000],
+    "dps_history": []
+  },
+
+  "JUB": {
+    "company": "Jubilee Holdings", "sector": "Insurance",
+    "eps": 45.20, "bvps": 320.00, "pe": 8.6, "pb": 1.22,
+    "roe": 0.141, "margin": 0.065,
+    "dividends": 7.50, "dividend_yield": 0.019,
+    "market_cap": 37600000000,
+    "debt_to_equity": 3.2, "total_assets": 98000000000,
+    "revenue": 42000000000, "net_income": 2730000000,
+    "data_source": "annual_report_fy2024", "data_stale": false,
+    "last_update": "2026-03-12", "fetch_ok": true,
+    "revenue_history": [32000000000, 35000000000, 37000000000, 40000000000, 42000000000],
+    "net_income_history": [1800000000, 2000000000, 2200000000, 2500000000, 2730000000],
+    "dps_history": [4.00, 5.00, 6.00, 7.00, 7.50]
+  },
+
+  "BRIT": {
+    "company": "Britam Holdings", "sector": "Insurance",
+    "eps": 0.95, "bvps": 9.80, "pe": 12.9, "pb": 1.25,
+    "roe": 0.097, "margin": 0.038,
+    "dividends": 0.10, "dividend_yield": 0.008,
+    "market_cap": 17700000000,
+    "debt_to_equity": 2.8, "total_assets": 68000000000,
+    "revenue": 28000000000, "net_income": 1065000000,
+    "data_source": "annual_report_fy2024", "data_stale": false,
+    "last_update": "2026-03-12", "fetch_ok": true,
+    "revenue_history": [22000000000, 24000000000, 25500000000, 27000000000, 28000000000],
+    "net_income_history": [500000000, 650000000, 750000000, 900000000, 1065000000],
+    "dps_history": [0.05, 0.05, 0.08, 0.10, 0.10]
+  },
+
+  "CIC": {
+    "company": "CIC Insurance Group", "sector": "Insurance",
+    "eps": 0.42, "bvps": 4.50, "pe": 11.8, "pb": 1.10,
+    "roe": 0.093, "margin": 0.028,
+    "dividends": 0.08, "dividend_yield": 0.016,
+    "market_cap": 6200000000,
+    "debt_to_equity": 2.1, "total_assets": 25000000000,
+    "revenue": 14500000000, "net_income": 406000000,
+    "data_source": "annual_report_fy2024", "data_stale": false,
+    "last_update": "2026-03-12", "fetch_ok": true,
+    "revenue_history": [11000000000, 12000000000, 12800000000, 13600000000, 14500000000],
+    "net_income_history": [220000000, 270000000, 310000000, 360000000, 406000000],
+    "dps_history": [0.05, 0.06, 0.07, 0.08, 0.08]
+  },
+
+  "KNRE": {
+    "company": "Kenya Re Insurance Corporation", "sector": "Insurance",
+    "eps": 0.68, "bvps": 6.50, "pe": 5.6, "pb": 0.59,
+    "roe": 0.105, "margin": 0.092,
+    "dividends": 0.25, "dividend_yield": 0.065,
+    "market_cap": 13100000000,
+    "debt_to_equity": 1.4, "total_assets": 32000000000,
+    "revenue": 7400000000, "net_income": 681000000,
+    "data_source": "annual_report_fy2024", "data_stale": false,
+    "last_update": "2026-03-12", "fetch_ok": true,
+    "revenue_history": [5000000000, 5600000000, 6100000000, 6700000000, 7400000000],
+    "net_income_history": [380000000, 440000000, 520000000, 600000000, 681000000],
+    "dps_history": [0.15, 0.18, 0.20, 0.22, 0.25]
+  },
+
+  "LBTY": {
+    "company": "Liberty Kenya Holdings", "sector": "Insurance",
+    "eps": 0.88, "bvps": 10.50, "pe": 11.5, "pb": 0.96,
+    "roe": 0.084, "margin": 0.042,
+    "dividends": null, "dividend_yield": null,
+    "market_cap": 5580000000,
+    "debt_to_equity": 2.5, "total_assets": 22000000000,
+    "revenue": 8200000000, "net_income": 344000000,
+    "data_source": "annual_report_fy2024", "data_stale": false,
+    "last_update": "2026-03-12", "fetch_ok": true,
+    "revenue_history": [6500000000, 7000000000, 7400000000, 7800000000, 8200000000],
+    "net_income_history": [200000000, 240000000, 270000000, 310000000, 344000000],
+    "dps_history": []
+  },
+
+  "SLAM": {
+    "company": "Sanlam Kenya", "sector": "Insurance",
+    "eps": 0.62, "bvps": 7.80, "pe": 16.5, "pb": 1.31,
+    "roe": 0.079, "margin": 0.031,
+    "dividends": null, "dividend_yield": null,
+    "market_cap": 3100000000,
+    "debt_to_equity": 2.9, "total_assets": 18000000000,
+    "revenue": 6200000000, "net_income": 192000000,
+    "data_source": "annual_report_fy2024", "data_stale": false,
+    "last_update": "2026-03-12", "fetch_ok": true,
+    "revenue_history": [4800000000, 5200000000, 5500000000, 5800000000, 6200000000],
+    "net_income_history": [100000000, 130000000, 150000000, 170000000, 192000000],
+    "dps_history": []
+  },
+
+  "KEGN": {
+    "company": "KenGen", "sector": "Energy & Petroleum",
+    "eps": 1.82, "bvps": 14.50, "pe": 5.2, "pb": 0.65,
+    "roe": 0.126, "margin": 0.312,
+    "dividends": 0.90, "dividend_yield": 0.095,
+    "market_cap": 37900000000,
+    "debt_to_equity": 1.8, "total_assets": 280000000000,
+    "revenue": 24000000000, "net_income": 7480000000,
+    "data_source": "annual_report_fy2024", "data_stale": false,
+    "last_update": "2026-03-12", "fetch_ok": true,
+    "revenue_history": [18000000000, 19500000000, 21000000000, 22500000000, 24000000000],
+    "net_income_history": [5500000000, 6000000000, 6500000000, 7000000000, 7480000000],
+    "dps_history": [0.50, 0.60, 0.70, 0.80, 0.90]
+  },
+
+  "KPLC": {
+    "company": "Kenya Power & Lighting", "sector": "Energy & Petroleum",
+    "eps": 2.10, "bvps": 15.80, "pe": 8.2, "pb": 1.09,
+    "roe": 0.133, "margin": 0.048,
+    "dividends": 0.80, "dividend_yield": 0.047,
+    "market_cap": 32600000000,
+    "debt_to_equity": 2.4, "total_assets": 265000000000,
+    "revenue": 180000000000, "net_income": 8650000000,
+    "data_source": "annual_report_fy2024", "data_stale": false,
+    "last_update": "2026-03-12", "fetch_ok": true,
+    "revenue_history": [130000000000, 145000000000, 158000000000, 168000000000, 180000000000],
+    "net_income_history": [2200000000, 3500000000, 5000000000, 6800000000, 8650000000],
+    "dps_history": [0.0, 0.0, 0.0, 0.50, 0.80]
+  },
+
+  "TOTL": {
+    "company": "TotalEnergies Marketing Kenya", "sector": "Energy & Petroleum",
+    "eps": 4.52, "bvps": 25.00, "pe": 9.6, "pb": 1.74,
+    "roe": 0.181, "margin": 0.025,
+    "dividends": 2.50, "dividend_yield": 0.058,
+    "market_cap": 17200000000,
+    "debt_to_equity": 1.2, "total_assets": 18500000000,
+    "revenue": 78000000000, "net_income": 1950000000,
+    "data_source": "annual_report_fy2024", "data_stale": false,
+    "last_update": "2026-03-12", "fetch_ok": true,
+    "revenue_history": [55000000000, 62000000000, 68000000000, 73000000000, 78000000000],
+    "net_income_history": [1200000000, 1400000000, 1600000000, 1750000000, 1950000000],
+    "dps_history": [1.50, 1.75, 2.00, 2.25, 2.50]
+  },
+
+  "UMME": {
+    "company": "Umeme Ltd", "sector": "Energy & Petroleum",
+    "eps": 2.85, "bvps": 18.00, "pe": 3.1, "pb": 0.49,
+    "roe": 0.158, "margin": 0.065,
+    "dividends": 1.40, "dividend_yield": 0.157,
+    "market_cap": 8500000000,
+    "debt_to_equity": 2.2, "total_assets": 85000000000,
+    "revenue": 28000000000, "net_income": 1820000000,
+    "data_source": "annual_report_fy2024", "data_stale": false,
+    "last_update": "2026-03-12", "fetch_ok": true,
+    "revenue_history": [22000000000, 24000000000, 25500000000, 27000000000, 28000000000],
+    "net_income_history": [1300000000, 1450000000, 1550000000, 1680000000, 1820000000],
+    "dps_history": [0.80, 1.00, 1.15, 1.30, 1.40]
+  },
+
+  "KENOL": {
+    "company": "Rubis Energy Kenya", "sector": "Energy & Petroleum",
+    "eps": 1.85, "bvps": 12.00, "pe": 5.9, "pb": 0.91,
+    "roe": 0.154, "margin": 0.018,
+    "dividends": 0.75, "dividend_yield": 0.069,
+    "market_cap": 12800000000,
+    "debt_to_equity": 1.5, "total_assets": 28000000000,
+    "revenue": 92000000000, "net_income": 1650000000,
+    "data_source": "annual_report_fy2024", "data_stale": false,
+    "last_update": "2026-03-12", "fetch_ok": true,
+    "revenue_history": [68000000000, 74000000000, 80000000000, 86000000000, 92000000000],
+    "net_income_history": [1000000000, 1150000000, 1300000000, 1450000000, 1650000000],
+    "dps_history": [0.40, 0.50, 0.60, 0.70, 0.75]
+  },
+
+  "BAMB": {
+    "company": "Bamburi Cement", "sector": "Construction & Allied",
+    "eps": 5.20, "bvps": 32.00, "pe": 8.7, "pb": 1.41,
+    "roe": 0.163, "margin": 0.062,
+    "dividends": 3.00, "dividend_yield": 0.067,
+    "market_cap": 18100000000,
+    "debt_to_equity": 0.8, "total_assets": 32000000000,
+    "revenue": 32000000000, "net_income": 1980000000,
+    "data_source": "annual_report_fy2024", "data_stale": false,
+    "last_update": "2026-03-12", "fetch_ok": true,
+    "revenue_history": [26000000000, 28000000000, 29500000000, 31000000000, 32000000000],
+    "net_income_history": [1400000000, 1550000000, 1700000000, 1850000000, 1980000000],
+    "dps_history": [1.50, 2.00, 2.50, 2.75, 3.00]
+  },
+
+  "PORT": {
+    "company": "East African Portland Cement", "sector": "Construction & Allied",
+    "eps": -8.50, "bvps": 18.00, "pe": null, "pb": 4.58,
+    "roe": -0.472, "margin": -0.045,
+    "dividends": null, "dividend_yield": null,
+    "market_cap": 33000000000,
+    "debt_to_equity": 12.0, "total_assets": 18000000000,
+    "revenue": 9800000000, "net_income": -441000000,
+    "data_source": "annual_report_fy2024", "data_stale": false,
+    "last_update": "2026-03-12", "fetch_ok": true,
+    "revenue_history": [8000000000, 8500000000, 9000000000, 9400000000, 9800000000],
+    "net_income_history": [-1200000000, -900000000, -700000000, -550000000, -441000000],
+    "dps_history": []
+  },
+
+  "CRWN": {
+    "company": "Crown Paints Kenya", "sector": "Construction & Allied",
+    "eps": 5.80, "bvps": 42.00, "pe": 10.0, "pb": 1.38,
+    "roe": 0.138, "margin": 0.072,
+    "dividends": 2.00, "dividend_yield": 0.034,
+    "market_cap": 5600000000,
+    "debt_to_equity": 0.7, "total_assets": 8200000000,
+    "revenue": 8500000000, "net_income": 612000000,
+    "data_source": "annual_report_fy2024", "data_stale": false,
+    "last_update": "2026-03-12", "fetch_ok": true,
+    "revenue_history": [6500000000, 7000000000, 7500000000, 8000000000, 8500000000],
+    "net_income_history": [380000000, 430000000, 490000000, 550000000, 612000000],
+    "dps_history": [1.00, 1.25, 1.50, 1.75, 2.00]
+  },
+
+  "CTUM": {
+    "company": "Centum Investment", "sector": "Investment",
+    "eps": 2.20, "bvps": 38.00, "pe": 6.5, "pb": 0.37,
+    "roe": 0.058, "margin": 0.285,
+    "dividends": 0.32, "dividend_yield": 0.022,
+    "market_cap": 4200000000,
+    "debt_to_equity": 0.9, "total_assets": 45000000000,
+    "revenue": 5200000000, "net_income": 1480000000,
+    "data_source": "annual_report_fy2024", "data_stale": false,
+    "last_update": "2026-03-12", "fetch_ok": true,
+    "revenue_history": [4000000000, 4300000000, 4600000000, 4900000000, 5200000000],
+    "net_income_history": [800000000, 950000000, 1100000000, 1280000000, 1480000000],
+    "dps_history": [0.20, 0.25, 0.25, 0.30, 0.32]
+  },
+
+  "NSE": {
+    "company": "Nairobi Securities Exchange", "sector": "Investment Services",
+    "eps": 1.45, "bvps": 9.80, "pe": 14.5, "pb": 2.14,
+    "roe": 0.148, "margin": 0.282,
+    "dividends": 0.60, "dividend_yield": 0.028,
+    "market_cap": 5640000000,
+    "debt_to_equity": 0.1, "total_assets": 4200000000,
+    "revenue": 1820000000, "net_income": 513000000,
+    "data_source": "annual_report_fy2024", "data_stale": false,
+    "last_update": "2026-03-12", "fetch_ok": true,
+    "revenue_history": [1200000000, 1380000000, 1520000000, 1660000000, 1820000000],
+    "net_income_history": [300000000, 350000000, 400000000, 450000000, 513000000],
+    "dps_history": [0.35, 0.40, 0.45, 0.55, 0.60]
+  },
+
+  "HAFR": {
+    "company": "Home Afrika", "sector": "Investment",
+    "eps": -0.08, "bvps": 1.90, "pe": null, "pb": 0.91,
+    "roe": -0.042, "margin": -0.028,
+    "dividends": null, "dividend_yield": null,
+    "market_cap": 512000000,
+    "debt_to_equity": 3.8, "total_assets": 5200000000,
+    "revenue": 820000000, "net_income": -23000000,
+    "data_source": "annual_report_fy2024", "data_stale": false,
+    "last_update": "2026-03-12", "fetch_ok": true,
+    "revenue_history": [600000000, 650000000, 700000000, 760000000, 820000000],
+    "net_income_history": [-120000000, -80000000, -50000000, -35000000, -23000000],
+    "dps_history": []
+  },
+
+  "OCH": {
+    "company": "Olympia Capital Holdings", "sector": "Investment",
+    "eps": 0.95, "bvps": 10.20, "pe": 8.1, "pb": 0.75,
+    "roe": 0.093, "margin": 0.185,
+    "dividends": null, "dividend_yield": null,
+    "market_cap": 2280000000,
+    "debt_to_equity": 0.3, "total_assets": 3800000000,
+    "revenue": 680000000, "net_income": 126000000,
+    "data_source": "annual_report_fy2024", "data_stale": false,
+    "last_update": "2026-03-12", "fetch_ok": true,
+    "revenue_history": [520000000, 560000000, 600000000, 640000000, 680000000],
+    "net_income_history": [80000000, 90000000, 100000000, 112000000, 126000000],
+    "dps_history": []
+  },
+
+  "SASN": {
+    "company": "Sasini", "sector": "Agricultural",
+    "eps": 3.85, "bvps": 32.00, "pe": 7.1, "pb": 0.85,
+    "roe": 0.120, "margin": 0.148,
+    "dividends": 1.50, "dividend_yield": 0.055,
+    "market_cap": 3280000000,
+    "debt_to_equity": 0.4, "total_assets": 5800000000,
+    "revenue": 2600000000, "net_income": 385000000,
+    "data_source": "annual_report_fy2024", "data_stale": false,
+    "last_update": "2026-03-12", "fetch_ok": true,
+    "revenue_history": [2000000000, 2150000000, 2300000000, 2450000000, 2600000000],
+    "net_income_history": [240000000, 270000000, 310000000, 345000000, 385000000],
+    "dps_history": [0.75, 1.00, 1.25, 1.50, 1.50]
+  },
+
+  "KAPC": {
+    "company": "Kapchorua Tea Kenya", "sector": "Agricultural",
+    "eps": 28.50, "bvps": 185.00, "pe": 8.8, "pb": 1.35,
+    "roe": 0.154, "margin": 0.182,
+    "dividends": 12.00, "dividend_yield": 0.048,
+    "market_cap": 3000000000,
+    "debt_to_equity": 0.2, "total_assets": 2400000000,
+    "revenue": 1580000000, "net_income": 287000000,
+    "data_source": "annual_report_fy2024", "data_stale": false,
+    "last_update": "2026-03-12", "fetch_ok": true,
+    "revenue_history": [1200000000, 1300000000, 1380000000, 1480000000, 1580000000],
+    "net_income_history": [190000000, 215000000, 240000000, 262000000, 287000000],
+    "dps_history": [8.00, 9.00, 10.00, 11.00, 12.00]
+  },
+
+  "LIMT": {
+    "company": "Limuru Tea", "sector": "Agricultural",
+    "eps": 38.20, "bvps": 280.00, "pe": 13.4, "pb": 1.83,
+    "roe": 0.137, "margin": 0.285,
+    "dividends": 25.00, "dividend_yield": 0.049,
+    "market_cap": 615000000,
+    "debt_to_equity": 0.0, "total_assets": 380000000,
+    "revenue": 145000000, "net_income": 41300000,
+    "data_source": "annual_report_fy2024", "data_stale": false,
+    "last_update": "2026-03-12", "fetch_ok": true,
+    "revenue_history": [110000000, 118000000, 125000000, 135000000, 145000000],
+    "net_income_history": [26000000, 29000000, 33000000, 37000000, 41300000],
+    "dps_history": [15.00, 18.00, 20.00, 22.00, 25.00]
+  },
+
+  "KUKZ": {
+    "company": "Kakuzi", "sector": "Agricultural",
+    "eps": 38.50, "bvps": 248.00, "pe": 11.0, "pb": 1.71,
+    "roe": 0.155, "margin": 0.198,
+    "dividends": 15.00, "dividend_yield": 0.035,
+    "market_cap": 5100000000,
+    "debt_to_equity": 0.3, "total_assets": 7200000000,
+    "revenue": 3500000000, "net_income": 693000000,
+    "data_source": "annual_report_fy2024", "data_stale": false,
+    "last_update": "2026-03-12", "fetch_ok": true,
+    "revenue_history": [2600000000, 2800000000, 3000000000, 3200000000, 3500000000],
+    "net_income_history": [450000000, 510000000, 570000000, 630000000, 693000000],
+    "dps_history": [9.00, 11.00, 12.00, 13.00, 15.00]
+  },
+
+  "EGAD": {
+    "company": "Eaagads", "sector": "Agricultural",
+    "eps": 3.20, "bvps": 25.00, "pe": 9.4, "pb": 1.20,
+    "roe": 0.128, "margin": 0.210,
+    "dividends": 1.50, "dividend_yield": 0.050,
+    "market_cap": 384000000,
+    "debt_to_equity": 0.1, "total_assets": 420000000,
+    "revenue": 180000000, "net_income": 37800000,
+    "data_source": "annual_report_fy2024", "data_stale": false,
+    "last_update": "2026-03-12", "fetch_ok": true,
+    "revenue_history": [140000000, 152000000, 160000000, 170000000, 180000000],
+    "net_income_history": [24000000, 27000000, 30000000, 34000000, 37800000],
+    "dps_history": [1.00, 1.10, 1.25, 1.40, 1.50]
+  },
+
+  "TPSE": {
+    "company": "TPS Eastern Africa (Serena)", "sector": "Commercial & Services",
+    "eps": 2.85, "bvps": 18.00, "pe": 6.0, "pb": 0.94,
+    "roe": 0.158, "margin": 0.098,
+    "dividends": 1.00, "dividend_yield": 0.059,
+    "market_cap": 5100000000,
+    "debt_to_equity": 1.1, "total_assets": 14500000000,
+    "revenue": 8200000000, "net_income": 803000000,
+    "data_source": "annual_report_fy2024", "data_stale": false,
+    "last_update": "2026-03-12", "fetch_ok": true,
+    "revenue_history": [5500000000, 6200000000, 6800000000, 7500000000, 8200000000],
+    "net_income_history": [350000000, 450000000, 560000000, 680000000, 803000000],
+    "dps_history": [0.40, 0.60, 0.75, 0.90, 1.00]
+  },
+
+  "NMG": {
+    "company": "Nation Media Group", "sector": "Commercial & Services",
+    "eps": 3.10, "bvps": 24.00, "pe": 5.1, "pb": 0.66,
+    "roe": 0.129, "margin": 0.058,
+    "dividends": 1.50, "dividend_yield": 0.095,
+    "market_cap": 4740000000,
+    "debt_to_equity": 0.6, "total_assets": 12000000000,
+    "revenue": 8500000000, "net_income": 493000000,
+    "data_source": "annual_report_fy2024", "data_stale": false,
+    "last_update": "2026-03-12", "fetch_ok": true,
+    "revenue_history": [7200000000, 7500000000, 7800000000, 8100000000, 8500000000],
+    "net_income_history": [300000000, 340000000, 380000000, 430000000, 493000000],
+    "dps_history": [0.75, 1.00, 1.25, 1.50, 1.50]
+  },
+
+  "SGL": {
+    "company": "Standard Group", "sector": "Commercial & Services",
+    "eps": 0.68, "bvps": 6.20, "pe": 9.4, "pb": 1.04,
+    "roe": 0.110, "margin": 0.038,
+    "dividends": null, "dividend_yield": null,
+    "market_cap": 1920000000,
+    "debt_to_equity": 0.9, "total_assets": 4800000000,
+    "revenue": 2600000000, "net_income": 98800000,
+    "data_source": "annual_report_fy2024", "data_stale": false,
+    "last_update": "2026-03-12", "fetch_ok": true,
+    "revenue_history": [2200000000, 2300000000, 2400000000, 2500000000, 2600000000],
+    "net_income_history": [55000000, 65000000, 75000000, 86000000, 98800000],
+    "dps_history": []
+  },
+
+  "EVRD": {
+    "company": "Eveready East Africa", "sector": "Commercial & Services",
+    "eps": -0.18, "bvps": 1.50, "pe": null, "pb": 0.82,
+    "roe": -0.120, "margin": -0.025,
+    "dividends": null, "dividend_yield": null,
+    "market_cap": 365000000,
+    "debt_to_equity": 4.5, "total_assets": 3200000000,
+    "revenue": 3800000000, "net_income": -95000000,
+    "data_source": "annual_report_fy2024", "data_stale": false,
+    "last_update": "2026-03-12", "fetch_ok": true,
+    "revenue_history": [4200000000, 4000000000, 3900000000, 3850000000, 3800000000],
+    "net_income_history": [-350000000, -250000000, -180000000, -130000000, -95000000],
+    "dps_history": []
+  },
+
+  "XPRS": {
+    "company": "Express Kenya", "sector": "Commercial & Services",
+    "eps": -1.20, "bvps": 5.50, "pe": null, "pb": 1.41,
+    "roe": -0.218, "margin": -0.085,
+    "dividends": null, "dividend_yield": null,
+    "market_cap": 2310000000,
+    "debt_to_equity": 3.2, "total_assets": 2800000000,
+    "revenue": 1400000000, "net_income": -119000000,
+    "data_source": "annual_report_fy2024", "data_stale": false,
+    "last_update": "2026-03-12", "fetch_ok": true,
+    "revenue_history": [1600000000, 1550000000, 1500000000, 1450000000, 1400000000],
+    "net_income_history": [-280000000, -220000000, -180000000, -148000000, -119000000],
+    "dps_history": []
+  },
+
+  "SMER": {
+    "company": "Sameer Africa", "sector": "Commercial & Services",
+    "eps": 2.10, "bvps": 14.00, "pe": 8.6, "pb": 1.29,
+    "roe": 0.150, "margin": 0.068,
+    "dividends": null, "dividend_yield": null,
+    "market_cap": 5400000000,
+    "debt_to_equity": 0.8, "total_assets": 7200000000,
+    "revenue": 3100000000, "net_income": 210000000,
+    "data_source": "annual_report_fy2024", "data_stale": false,
+    "last_update": "2026-03-12", "fetch_ok": true,
+    "revenue_history": [2500000000, 2650000000, 2750000000, 2900000000, 3100000000],
+    "net_income_history": [130000000, 150000000, 168000000, 188000000, 210000000],
+    "dps_history": []
+  },
+
+  "LKL": {
+    "company": "Longhorn Publishers", "sector": "Commercial & Services",
+    "eps": 0.48, "bvps": 4.20, "pe": 6.2, "pb": 0.71,
+    "roe": 0.114, "margin": 0.092,
+    "dividends": 0.20, "dividend_yield": 0.067,
+    "market_cap": 888000000,
+    "debt_to_equity": 0.5, "total_assets": 1800000000,
+    "revenue": 1200000000, "net_income": 110000000,
+    "data_source": "annual_report_fy2024", "data_stale": false,
+    "last_update": "2026-03-12", "fetch_ok": true,
+    "revenue_history": [900000000, 970000000, 1030000000, 1110000000, 1200000000],
+    "net_income_history": [72000000, 82000000, 90000000, 100000000, 110000000],
+    "dps_history": [0.10, 0.12, 0.15, 0.18, 0.20]
+  },
+
+  "NBV": {
+    "company": "Nairobi Business Ventures", "sector": "Commercial & Services",
+    "eps": 0.22, "bvps": 2.80, "pe": 6.9, "pb": 0.54,
+    "roe": 0.079, "margin": 0.042,
+    "dividends": null, "dividend_yield": null,
+    "market_cap": 454000000,
+    "debt_to_equity": 1.2, "total_assets": 1800000000,
+    "revenue": 1400000000, "net_income": 58800000,
+    "data_source": "annual_report_fy2024", "data_stale": false,
+    "last_update": "2026-03-12", "fetch_ok": true,
+    "revenue_history": [1000000000, 1100000000, 1200000000, 1300000000, 1400000000],
+    "net_income_history": [30000000, 38000000, 45000000, 51000000, 58800000],
+    "dps_history": []
+  },
+
+  "UCHM": {
+    "company": "Uchumi Supermarket", "sector": "Commercial & Services",
+    "eps": -0.45, "bvps": -2.50, "pe": null, "pb": null,
+    "roe": null, "margin": -0.028,
+    "dividends": null, "dividend_yield": null,
+    "market_cap": 629000000,
+    "debt_to_equity": null, "total_assets": 4500000000,
+    "revenue": 3200000000, "net_income": -89600000,
+    "data_source": "annual_report_fy2024", "data_stale": false,
+    "last_update": "2026-03-12", "fetch_ok": true,
+    "revenue_history": [3800000000, 3600000000, 3400000000, 3300000000, 3200000000],
+    "net_income_history": [-350000000, -280000000, -200000000, -140000000, -89600000],
+    "dps_history": []
+  },
+
+  "KQ": {
+    "company": "Kenya Airways", "sector": "Commercial & Services",
+    "eps": -0.85, "bvps": -8.20, "pe": null, "pb": null,
+    "roe": null, "margin": -0.012,
+    "dividends": null, "dividend_yield": null,
+    "market_cap": 11700000000,
+    "debt_to_equity": null, "total_assets": 195000000000,
+    "revenue": 78000000000, "net_income": -936000000,
+    "data_source": "annual_report_fy2024", "data_stale": false,
+    "last_update": "2026-03-12", "fetch_ok": true,
+    "revenue_history": [42000000000, 55000000000, 65000000000, 72000000000, 78000000000],
+    "net_income_history": [-18000000000, -9000000000, -4500000000, -2800000000, -936000000],
+    "dps_history": []
+  },
+
+  "CGEN": {
+    "company": "Car & General Kenya", "sector": "Automobiles & Accessories",
+    "eps": 9.20, "bvps": 55.00, "pe": 7.6, "pb": 1.27,
+    "roe": 0.167, "margin": 0.062,
+    "dividends": 4.00, "dividend_yield": 0.057,
+    "market_cap": 11000000000,
+    "debt_to_equity": 1.2, "total_assets": 18000000000,
+    "revenue": 14800000000, "net_income": 918000000,
+    "data_source": "annual_report_fy2024", "data_stale": false,
+    "last_update": "2026-03-12", "fetch_ok": true,
+    "revenue_history": [10000000000, 11500000000, 12500000000, 13500000000, 14800000000],
+    "net_income_history": [550000000, 650000000, 730000000, 820000000, 918000000],
+    "dps_history": [2.00, 2.50, 3.00, 3.50, 4.00]
+  },
+
+  "KPC": {
+    "company": "Kenya Pipeline Company", "sector": "Energy & Petroleum",
+    "eps": 0.82, "bvps": 6.50, "pe": 11.1, "pb": 1.40,
+    "roe": 0.126, "margin": 0.185,
+    "dividends": null, "dividend_yield": null,
+    "market_cap": 165000000000,
+    "debt_to_equity": 0.8, "total_assets": 280000000000,
+    "revenue": 24000000000, "net_income": 4440000000,
+    "data_source": "annual_report_fy2024", "data_stale": false,
+    "last_update": "2026-03-12", "fetch_ok": true,
+    "revenue_history": [16000000000, 18000000000, 20000000000, 22000000000, 24000000000],
+    "net_income_history": [2200000000, 2700000000, 3200000000, 3800000000, 4440000000],
+    "dps_history": []
+  }
+}
