@@ -513,7 +513,20 @@ def data_sources():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/api/refresh-stock")
+@app.get("/api/data-health")
+def data_health():
+    """
+    Returns actionable data health alerts — missing fields, expired data, failed fetches.
+    Used by frontend notification bell to show what needs attention.
+    """
+    try:
+        from services.nse_scraper import get_data_health_report
+        return get_data_health_report(NSE_TICKERS)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+
 def refresh_stock(body: dict):
     """Force re-fetch a single ticker bypassing cache."""
     try:

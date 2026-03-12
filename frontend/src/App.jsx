@@ -1653,6 +1653,9 @@ function GoldTrading({onToast}){
 // ══════════════════════════════════════════════════════════════════════════
 export default function App(){
   const [page,setPage]           = useState("dashboard");
+  const [sidebarOpen,setSidebarOpen] = useState(false);
+  const [healthAlerts,setHealthAlerts] = useState([]);
+  const [showAlerts,setShowAlerts] = useState(false);
   const [stocks,setStocks]       = useState([]);
   const [sectors,setSectors]     = useState([]);
   const [tickers,setTickers]     = useState([]);
@@ -1671,6 +1674,8 @@ export default function App(){
     get("/api/tickers").then(d=>setTickers(d.tickers||[])).catch(()=>{});
     get("/api/sectors").then(d=>setSectors(d.sectors||[])).catch(()=>{});
     get("/api/watchlist").then(d=>setWatchlist(d.watchlist||[])).catch(()=>{});
+    // Load data health alerts
+    get("/api/data-health").then(d=>setHealthAlerts(d.alerts||[])).catch(()=>{});
   },[]);
 
   useEffect(()=>{
@@ -1706,7 +1711,7 @@ export default function App(){
     setModal(null);
   };
 
-  const goTo=(id)=>{setPage(id);setSelected(null);};
+  const goTo=(id)=>{setPage(id);setSelected(null);setSidebarOpen(false);};
   const openStock=useCallback((s)=>{setSelected(s.ticker);setPage("detail");},[]);
   const openTrade=(ticker,type)=>setModal({ticker,type});
 
@@ -1730,10 +1735,29 @@ export default function App(){
         ::-webkit-scrollbar-thumb{background:${C.greenLt};border-radius:4px;}
         input,button,select{font-family:inherit;}
         @keyframes spin{to{transform:rotate(360deg);}}
+        .sidebar-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:40;}
+        @media(max-width:768px){
+          .sidebar-desktop{display:none!important;}
+          .sidebar-overlay.open{display:block;}
+          .sidebar-mobile{display:flex!important;}
+          .mobile-topbar-hamburger{display:flex!important;}
+          .main-padding{padding:16px 14px!important;}
+          .topbar-title{font-size:15px!important;}
+          .topbar-pad{padding:10px 14px!important;}
+          .log-trade-btn{padding:8px 12px!important;font-size:11px!important;}
+        }
+        @media(min-width:769px){
+          .sidebar-mobile{display:none!important;}
+          .mobile-topbar-hamburger{display:none!important;}
+          .sidebar-desktop{display:flex!important;}
+        }
       `}</style>
 
-      {/* SIDEBAR */}
-      <div style={{width:234,flexShrink:0,background:"linear-gradient(180deg,"+C.green+","+C.greenDk+")",display:"flex",flexDirection:"column",position:"sticky",top:0,height:"100vh",boxShadow:"2px 0 12px #0000001C"}}>
+      {/* MOBILE OVERLAY — tap to close */}
+      <div className={"sidebar-overlay"+(sidebarOpen?" open":"")} onClick={()=>setSidebarOpen(false)}/>
+
+      {/* SIDEBAR — desktop always visible, mobile slides in */}
+      <div className="sidebar-desktop" style={{width:234,flexShrink:0,background:"linear-gradient(180deg,"+C.green+","+C.greenDk+")",display:"flex",flexDirection:"column",position:"sticky",top:0,height:"100vh",boxShadow:"2px 0 12px #0000001C"}}>
         <div style={{padding:"18px 18px 14px",borderBottom:"1px solid #ffffff22",display:"flex",alignItems:"center",gap:10}}>
           <img src="/logo.png" alt="" style={{width:44,height:44,borderRadius:"50%",objectFit:"cover",border:"2px solid "+C.gold,boxShadow:"0 0 0 3px #ffffff25",flexShrink:0}} onError={e=>e.target.style.display="none"}/>
           <div>
@@ -1764,21 +1788,103 @@ export default function App(){
         </div>
       </div>
 
+      {/* MOBILE SIDEBAR — slides in from left */}
+      <div className="sidebar-mobile" style={{position:"fixed",top:0,left:sidebarOpen?0:"-260px",width:234,height:"100vh",background:"linear-gradient(180deg,"+C.green+","+C.greenDk+")",display:"flex",flexDirection:"column",zIndex:50,transition:"left 0.25s ease",boxShadow:"2px 0 20px #00000030"}}>
+        <div style={{padding:"18px 18px 14px",borderBottom:"1px solid #ffffff22",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+          <div style={{display:"flex",alignItems:"center",gap:10}}>
+            <img src="/logo.png" alt="" style={{width:38,height:38,borderRadius:"50%",objectFit:"cover",border:"2px solid "+C.gold}} onError={e=>e.target.style.display="none"}/>
+            <div>
+              <div style={{fontSize:16,fontWeight:900,color:"#fff",lineHeight:1}}>Stock<span style={{color:C.gold}}>Intel</span></div>
+              <div style={{fontSize:9,color:"#ffffff90",letterSpacing:"0.1em",textTransform:"uppercase",marginTop:2,fontStyle:"italic"}}>Cut Through Noise</div>
+            </div>
+          </div>
+          <button onClick={()=>setSidebarOpen(false)} style={{background:"none",border:"none",color:"#fff",fontSize:20,cursor:"pointer",padding:"4px 8px",lineHeight:1}}>✕</button>
+        </div>
+        <nav style={{padding:"12px 10px",flex:1}}>
+          {navItems.map(n=>{
+            const active=page===n.id||(page==="detail"&&n.id==="screener");
+            return(
+              <button key={n.id} onClick={()=>goTo(n.id)} style={{width:"100%",display:"flex",alignItems:"center",gap:10,padding:"12px 13px",borderRadius:9,border:"none",background:active?"#ffffff22":"transparent",color:active?C.gold:"#ffffffCC",fontWeight:active?700:400,fontSize:14,cursor:"pointer",marginBottom:2,textAlign:"left",borderLeft:"3px solid "+(active?C.gold:"transparent")}}>
+                <span style={{fontSize:17,width:22,textAlign:"center",flexShrink:0}}>{n.icon}</span>{n.l}
+              </button>
+            );
+          })}
+        </nav>
+        <div style={{padding:"13px 16px",borderTop:"1px solid #ffffff22"}}>
+          <div style={{display:"flex",alignItems:"center",gap:8}}>
+            <div style={{width:8,height:8,borderRadius:"50%",background:live===null?C.gold:live?"#4ade80":C.red}}/>
+            <span style={{fontSize:11,color:"#ffffffBB"}}>{live===null?"Connecting…":live?"🟢 Live":"🔴 Offline"}</span>
+          </div>
+        </div>
+      </div>
+
       {/* MAIN */}
       <div style={{flex:1,display:"flex",flexDirection:"column",minWidth:0,overflow:"hidden"}}>
         {/* Top bar */}
-        <div style={{padding:"13px 28px",borderBottom:"2px solid "+C.border,background:C.surface,display:"flex",alignItems:"center",justifyContent:"space-between",position:"sticky",top:0,zIndex:10,flexShrink:0,boxShadow:"0 1px 6px #0000000C"}}>
-          <div>
-            <div style={{fontSize:19,fontWeight:800,color:C.text}}>{titles[page]||"Stock Intel"}</div>
-            <div style={{fontSize:11,color:C.muted,marginTop:1}}>{new Date().toLocaleDateString("en-KE",{weekday:"long",year:"numeric",month:"long",day:"numeric"})} · NSE</div>
+        <div className="topbar-pad" style={{padding:"13px 28px",borderBottom:"2px solid "+C.border,background:C.surface,display:"flex",alignItems:"center",justifyContent:"space-between",position:"sticky",top:0,zIndex:10,flexShrink:0,boxShadow:"0 1px 6px #0000000C"}}>
+          <div style={{display:"flex",alignItems:"center",gap:10}}>
+            {/* Hamburger — mobile only */}
+            <button className="mobile-topbar-hamburger" onClick={()=>setSidebarOpen(true)} style={{display:"none",background:"none",border:"none",cursor:"pointer",padding:"4px 6px",flexDirection:"column",gap:4,marginRight:4}}>
+              <span style={{display:"block",width:20,height:2,background:C.text,borderRadius:2}}/>
+              <span style={{display:"block",width:20,height:2,background:C.text,borderRadius:2}}/>
+              <span style={{display:"block",width:20,height:2,background:C.text,borderRadius:2}}/>
+            </button>
+            <div>
+              <div className="topbar-title" style={{fontSize:19,fontWeight:800,color:C.text}}>{titles[page]||"Stock Intel"}</div>
+              <div style={{fontSize:11,color:C.muted,marginTop:1}}>{new Date().toLocaleDateString("en-KE",{weekday:"long",year:"numeric",month:"long",day:"numeric"})} · NSE</div>
+            </div>
           </div>
-          <button onClick={()=>setModal({ticker:"",type:"BUY"})} style={{padding:"10px 22px",borderRadius:9,border:"none",background:"linear-gradient(135deg,"+C.green+","+C.greenDk+")",color:"#fff",fontWeight:800,fontSize:13,cursor:"pointer",letterSpacing:"0.03em",boxShadow:"0 4px 14px "+C.green+"44"}}>
-            + Log Trade
-          </button>
+          <div style={{display:"flex",alignItems:"center",gap:8}}>
+            {/* Data health bell */}
+            <div style={{position:"relative"}}>
+              <button onClick={()=>setShowAlerts(a=>!a)} title="Data Health Alerts"
+                style={{padding:"9px 12px",borderRadius:9,border:"1px solid "+C.borderGray,background:C.surface,cursor:"pointer",fontSize:16,position:"relative",display:"flex",alignItems:"center",gap:4}}>
+                🔔
+                {healthAlerts.filter(a=>a.severity==="critical").length>0&&(
+                  <span style={{position:"absolute",top:-4,right:-4,background:C.red,color:"#fff",borderRadius:"50%",width:16,height:16,fontSize:9,fontWeight:900,display:"flex",alignItems:"center",justifyContent:"center"}}>
+                    {healthAlerts.filter(a=>a.severity==="critical").length}
+                  </span>
+                )}
+                {healthAlerts.filter(a=>a.severity==="critical").length===0&&healthAlerts.filter(a=>a.severity==="warning").length>0&&(
+                  <span style={{position:"absolute",top:-4,right:-4,background:C.orange,color:"#fff",borderRadius:"50%",width:16,height:16,fontSize:9,fontWeight:900,display:"flex",alignItems:"center",justifyContent:"center"}}>
+                    {healthAlerts.filter(a=>a.severity==="warning").length}
+                  </span>
+                )}
+              </button>
+              {showAlerts&&(
+                <div style={{position:"absolute",right:0,top:"110%",width:320,background:C.surface,border:"1px solid "+C.borderGray,borderRadius:12,boxShadow:"0 8px 32px #00000018",zIndex:100,maxHeight:400,overflowY:"auto"}}>
+                  <div style={{padding:"12px 16px",borderBottom:"1px solid "+C.borderGray,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                    <span style={{fontWeight:700,fontSize:13,color:C.text}}>Data Health Alerts</span>
+                    <button onClick={()=>setShowAlerts(false)} style={{background:"none",border:"none",cursor:"pointer",fontSize:16,color:C.muted}}>✕</button>
+                  </div>
+                  {healthAlerts.length===0?(
+                    <div style={{padding:16,fontSize:12,color:C.muted,textAlign:"center"}}>✅ All data looks good</div>
+                  ):(
+                    healthAlerts.slice(0,20).map((a,i)=>(
+                      <div key={i} style={{padding:"10px 16px",borderBottom:"1px solid "+C.borderGray+"88",background:a.severity==="critical"?C.redLt:a.severity==="warning"?"#fffbeb":C.surface}}>
+                        <div style={{fontSize:11,fontWeight:700,color:a.severity==="critical"?C.red:a.severity==="warning"?"#92400e":C.text}}>
+                          {a.severity==="critical"?"🔴":"🟡"} {a.message}
+                        </div>
+                        <div style={{fontSize:10,color:C.muted,marginTop:2}}>→ {a.action}</div>
+                      </div>
+                    ))
+                  )}
+                  <div style={{padding:"10px 16px",borderTop:"1px solid "+C.borderGray}}>
+                    <button onClick={()=>{setShowAlerts(false);setPage("freshness");}} style={{fontSize:11,color:C.green,background:"none",border:"none",cursor:"pointer",fontWeight:700}}>
+                      View Data Status Page →
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+            <button className="log-trade-btn" onClick={()=>setModal({ticker:"",type:"BUY"})} style={{padding:"10px 22px",borderRadius:9,border:"none",background:"linear-gradient(135deg,"+C.green+","+C.greenDk+")",color:"#fff",fontWeight:800,fontSize:13,cursor:"pointer",letterSpacing:"0.03em",boxShadow:"0 4px 14px "+C.green+"44"}}>
+              + Log Trade
+            </button>
+          </div>
         </div>
 
         {/* Page content */}
-        <div style={{flex:1,padding:"24px 28px",overflowY:"auto",background:C.bg}}>
+        <div className="main-padding" style={{flex:1,padding:"24px 28px",overflowY:"auto",background:C.bg}}>
           {offline&&<OfflineBanner/>}
           {page==="dashboard" && <Dashboard  stocks={stocks} portfolio={portfolio} onSelect={openStock} onTrade={openTrade}/>}
           {page==="screener"  && <Screener   stocks={stocks} sectors={sectors}     onSelect={openStock} onTrade={openTrade}/>}
