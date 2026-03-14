@@ -33,9 +33,7 @@ _lock = threading.Lock()
 
 # ── Fields ───────────────────────────────────────────────────────────────────
 
-PRICE_FIELDS = [
-    "ticker", "date", "open", "high", "low", "close", "volume"
-]
+PRICE_FIELDS = ["ticker", "price"]
 
 FUNDAMENTAL_FIELDS = [
     "ticker",
@@ -100,23 +98,12 @@ def _age_days(ts_str):
 # ── Template generation ───────────────────────────────────────────────────────
 
 def generate_price_template(tickers: list) -> str:
-    """Return CSV bytes for price upload template — one row per ticker."""
-    rows = []
-    today = datetime.now().strftime("%Y-%m-%d")
-    for t in tickers:
-        rows.append({
-            "ticker":  t["ticker"],
-            "date":    today,
-            "open":    "",
-            "high":    "",
-            "low":     "",
-            "close":   "",   # ← most important field
-            "volume":  "",
-        })
+    """Return CSV with ticker pre-filled and empty price column — user fills price only."""
     out = io.StringIO()
     w = csv.DictWriter(out, fieldnames=PRICE_FIELDS)
     w.writeheader()
-    w.writerows(rows)
+    for t in tickers:
+        w.writerow({"ticker": t["ticker"], "price": ""})
     return out.getvalue()
 
 
@@ -202,50 +189,33 @@ def _parse_history(val):
 
 def parse_price_csv(content: bytes) -> tuple[list, list]:
     """
-    Parse uploaded price CSV.
-    Returns (valid_rows, errors)
-    valid_rows = list of dicts with clean data
+    Parse uploaded price CSV. Only ticker + price required.
+    System sets today's date automatically.
     """
     errors = []
     valid = []
+    today = datetime.now().strftime("%Y-%m-%d")
     try:
-        text = content.decode("utf-8-sig")  # handle BOM
+        text = content.decode("utf-8-sig")
         reader = csv.DictReader(io.StringIO(text))
-        # Normalise column names
         for i, row in enumerate(reader, start=2):
             row = {k.strip().lower(): v for k, v in row.items()}
             ticker = str(row.get("ticker", "")).strip().upper()
             if not ticker:
-                errors.append(f"Row {i}: missing ticker")
                 continue
-            date_str = str(row.get("date", "")).strip()
-            try:
-                date = datetime.strptime(date_str, "%Y-%m-%d").strftime("%Y-%m-%d")
-            except Exception:
-                # Try other formats
-                for fmt in ["%d/%m/%Y", "%m/%d/%Y", "%d-%m-%Y"]:
-                    try:
-                        date = datetime.strptime(date_str, fmt).strftime("%Y-%m-%d")
-                        break
-                    except Exception:
-                        pass
-                else:
-                    date = datetime.now().strftime("%Y-%m-%d")
-                    errors.append(f"Row {i} {ticker}: date '{date_str}' unclear, using today")
-
-            close = _safe_float(row.get("close", ""))
-            if close is None or close <= 0:
-                errors.append(f"Row {i} {ticker}: close price missing or zero — row skipped")
+            # Accept "price" or "close" column
+            price = _safe_float(row.get("price") or row.get("close"))
+            if price is None or price <= 0:
+                errors.append(f"{ticker}: price missing or zero — skipped")
                 continue
-
             valid.append({
                 "ticker": ticker,
-                "date":   date,
-                "open":   _safe_float(row.get("open")) or close,
-                "high":   _safe_float(row.get("high")) or close,
-                "low":    _safe_float(row.get("low"))  or close,
-                "close":  close,
-                "volume": int(_safe_float(row.get("volume")) or 0),
+                "date":   today,
+                "open":   price,
+                "high":   price,
+                "low":    price,
+                "close":  price,
+                "volume": 0,
             })
     except Exception as e:
         errors.append(f"CSV parse error: {e}")

@@ -1005,8 +1005,12 @@ function DataFreshness({onToast, focusTicker=null, focusField=null}){
       onToast(`Prices uploaded: ${d.updated} tickers updated`,"info");
       setUploadResult({type:"prices",...d});
       load();
-    }catch(e){ onToast(`Price upload failed: ${e.message}`,"error"); setUploadResult({error:e.message}); }
-    setUploadingPrice(false);
+    }catch(e){
+      onToast(`Price upload failed: ${e.message}`,"error");
+      setUploadResult({error:e.message});
+    }finally{
+      setUploadingPrice(false);
+    }
   };
 
   const handleUploadFundamentals = async (formData) => {
@@ -1018,8 +1022,12 @@ function DataFreshness({onToast, focusTicker=null, focusField=null}){
       onToast(`Fundamentals uploaded: ${d.updated} tickers updated`,"info");
       setUploadResult({type:"fundamentals",...d});
       load();
-    }catch(e){ onToast(`Fundamentals upload failed: ${e.message}`,"error"); setUploadResult({error:e.message}); }
-    setUploadingFund(false);
+    }catch(e){
+      onToast(`Fundamentals upload failed: ${e.message}`,"error");
+      setUploadResult({error:e.message});
+    }finally{
+      setUploadingFund(false);
+    }
   };
 
   const openEdit = (ticker, field, currentVal="") => {
@@ -1074,7 +1082,7 @@ function DataFreshness({onToast, focusTicker=null, focusField=null}){
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:12}}>
             <div>
               <div style={{fontSize:14,fontWeight:800,color:C.text}}>Upload Prices</div>
-              <div style={{fontSize:11,color:C.muted,marginTop:2}}>Update weekly. Only close price is required.</div>
+              <div style={{fontSize:11,color:C.muted,marginTop:2}}>Two columns only: <strong>ticker</strong> and <strong>price</strong>. That is it.</div>
             </div>
             {ps&&(
               <div style={{textAlign:"right",flexShrink:0}}>
@@ -1088,7 +1096,7 @@ function DataFreshness({onToast, focusTicker=null, focusField=null}){
           <button onClick={()=>downloadTemplate("prices")}
             style={{width:"100%",padding:"8px 0",borderRadius:8,border:"1.5px solid "+C.green,background:"transparent",
               color:C.green,fontWeight:700,fontSize:12,cursor:"pointer",fontFamily:"inherit",marginBottom:10}}>
-            Download Price Template (all stocks)
+            Download Template (all stocks pre-loaded, just fill price)
           </button>
           <div
             onDragOver={e=>{e.preventDefault();e.currentTarget.style.background=C.greenBg;}}
@@ -1097,10 +1105,9 @@ function DataFreshness({onToast, focusTicker=null, focusField=null}){
               const fd=new FormData();fd.append("file",e.dataTransfer.files[0]);handleUploadPrices(fd);}}
             onClick={()=>document.getElementById("price-inp").click()}
             style={{border:"2px dashed "+C.borderGray,borderRadius:10,padding:"18px",textAlign:"center",
-              cursor:uploadingPrice?"wait":"pointer",background:"#fafafa",transition:"background .15s"}}>
-            <div style={{fontSize:20,marginBottom:4}}>{uploadingPrice?"...":"+"}</div>
-            <div style={{fontSize:12,color:C.muted,fontWeight:600}}>
-              {uploadingPrice?"Uploading & validating...":"Drop CSV or click to upload"}
+              cursor:"pointer",background:"#fafafa",transition:"background .15s"}}>
+            <div style={{fontSize:12,color:uploadingPrice?C.green:C.muted,fontWeight:600}}>
+              {uploadingPrice?"Uploading...":"Drop CSV here or click to browse"}
             </div>
             <input id="price-inp" type="file" accept=".csv" style={{display:"none"}}
               onChange={e=>{const fd=new FormData();fd.append("file",e.target.files[0]);handleUploadPrices(fd);e.target.value="";}}/>
