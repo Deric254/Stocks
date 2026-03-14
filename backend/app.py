@@ -1,10 +1,10 @@
 """
 Stock Intel API — FastAPI backend
-Works locally and on Render/Railway/any host.
+Manual CSV data uploads. No scraping. No external APIs.
 """
 
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
@@ -16,41 +16,51 @@ from services.data_loader import DataLoader
 from services.scoring import ScoringEngine
 from services.portfolio import PortfolioManager
 from services.analytics import AnalyticsEngine
+from services.csv_data_manager import get_manager, generate_price_template, generate_fundamentals_template
 
-# ── Lifespan (replaces deprecated on_event) ────────────────────────────────
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    # Startup
-    def _bg():
-        loader.prefetch_all(NSE_TICKERS)
-    threading.Thread(target=_bg, daemon=True).start()
-    print("[startup] Background prefetch started.")
-
-    # ── Keep-alive: ping self every 14 minutes so Render never sleeps ──
-    def _keep_alive():
-        # Wait 2 min after startup before first ping
-        time.sleep(120)
-        self_url = os.environ.get("RENDER_EXTERNAL_URL", "")
+# ── Keep-alive: robust external ping via UptimeRobot or self-ping ──────────
+def _start_keep_alive():
+    """
+    Two-layer keep-alive for Render free tier:
+    1. Self-ping every 14 min (keeps process warm between external pings)
+    2. Designed to work WITH UptimeRobot free plan pinging /api/ping every 5 min
+    
+    Set RENDER_EXTERNAL_URL env var in Render dashboard to enable self-ping.
+    Also add UptimeRobot monitor: https://your-app.onrender.com/api/ping
+    """
+    def _loop():
+        time.sleep(90)  # wait for startup
+        self_url = os.environ.get("RENDER_EXTERNAL_URL", "").rstrip("/")
         if not self_url:
-            print("[keep-alive] RENDER_EXTERNAL_URL not set — self-ping disabled (local mode)")
+            print("[keep-alive] RENDER_EXTERNAL_URL not set — add it in Render env vars")
             return
-        ping_url = f"{self_url}/"
-        print(f"[keep-alive] Starting self-ping every 14 min → {ping_url}")
+        ping_url = f"{self_url}/api/ping"
+        print(f"[keep-alive] Self-ping every 14 min → {ping_url}")
         while True:
             try:
                 import requests as _req
-                r = _req.get(ping_url, timeout=10)
-                print(f"[keep-alive] Ping OK — {r.status_code} at {datetime.now().strftime('%H:%M:%S')}")
+                r = _req.get(ping_url, timeout=15)
+                print(f"[keep-alive] ✓ {r.status_code} at {datetime.now().strftime('%H:%M:%S')}")
             except Exception as e:
-                print(f"[keep-alive] Ping failed: {e}")
-            time.sleep(14 * 60)  # 14 minutes
+                print(f"[keep-alive] ✗ ping failed: {e}")
+            time.sleep(14 * 60)
+    threading.Thread(target=_loop, daemon=True).start()
 
-    threading.Thread(target=_keep_alive, daemon=True).start()
-    print("[startup] Keep-alive self-ping thread started.")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup: load local data (fast — no network calls)
+    print("[startup] Loading local CSV data...")
+    mgr = get_manager()
+    meta = mgr.get_upload_meta()
+    price_count = meta.get("prices_ticker_count", 0)
+    fund_count  = meta.get("fundamentals_ticker_count", 0)
+    print(f"[startup] Loaded: {price_count} prices, {fund_count} fundamentals from CSV")
+    _start_keep_alive()
+    print("[startup] Ready.")
     yield
-    # Shutdown (nothing needed)
 
-app = FastAPI(title="Stock Intel API", version="4.0.0", lifespan=lifespan)
+app = FastAPI(title="Stock Intel API", version="5.0.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -152,6 +162,8 @@ def _clean_dict(d: dict) -> dict:
     return {k: _clean(v) for k, v in d.items()}
 
 
+# ── Models ─────────────────────────────────────────────────────────────────
+
 class TradeRequest(BaseModel):
     ticker: str
     trade_type: str
@@ -170,19 +182,37 @@ class WatchlistRequest(BaseModel):
 
 class AlertRequest(BaseModel):
     ticker: str
-    alert_type: str   # "score_above" | "score_below" | "price_drop"
+    alert_type: str
     threshold: float
 
+class ManualPriceRequest(BaseModel):
+    ticker: str
+    price: float
+    date: Optional[str] = None
+
+class ManualFundamentalRequest(BaseModel):
+    ticker: str
+    field: str
+    value: float
+
+
+# ── Health & keep-alive ────────────────────────────────────────────────────
 
 @app.get("/")
 def root():
-    return {"message": "Stock Intel API v3", "status": "running"}
+    return {"message": "Stock Intel API v5", "status": "running", "mode": "manual_csv"}
 
+@app.get("/api/ping")
+def ping():
+    """Lightweight endpoint for UptimeRobot / self-ping keep-alive."""
+    return {"ok": True, "ts": datetime.now().isoformat()}
+
+
+# ── Tickers & Sectors ──────────────────────────────────────────────────────
 
 @app.get("/api/tickers")
 def get_tickers():
     return {"tickers": NSE_TICKERS}
-
 
 @app.get("/api/sectors")
 def get_sectors():
@@ -190,12 +220,10 @@ def get_sectors():
     return {"sectors": sectors}
 
 
+# ── Stocks ─────────────────────────────────────────────────────────────────
+
 @app.get("/api/stocks")
 def get_stocks(sector: str = "", sort: str = "score"):
-    """
-    Returns all stocks. Parallel fetch — max 8s total wait.
-    Serves from cache immediately if available. Never hangs.
-    """
     global _score_cache
     tickers = NSE_TICKERS
     if sector:
@@ -217,10 +245,10 @@ def get_stocks(sector: str = "", sort: str = "score"):
             asset_cov    = round(total_assets / market_cap, 2) if (total_assets and market_cap and market_cap > 0) else None
 
             return {
-                "ticker":   ticker,
-                "name":     meta["name"],
-                "sector":   meta["sector"],
-                "scores":   _clean_dict(scores),
+                "ticker":  ticker,
+                "name":    meta["name"],
+                "sector":  meta["sector"],
+                "scores":  _clean_dict(scores),
                 "metrics": {
                     "pe":             _clean(fundamentals.get("pe")),
                     "pb":             _clean(fundamentals.get("pb")),
@@ -228,7 +256,7 @@ def get_stocks(sector: str = "", sort: str = "score"):
                     "price":          round(current_price, 2),
                     "asset_coverage": asset_cov,
                     "data_stale":     bool(fundamentals.get("data_stale")),
-                    "last_update":    fundamentals.get("last_update",""),
+                    "last_update":    fundamentals.get("last_update", ""),
                 },
                 "sparkline": [round(p, 2) for p in sparkline],
             }
@@ -241,7 +269,6 @@ def get_stocks(sector: str = "", sort: str = "score"):
         futures = list(ex.map(_process_one, tickers))
     results = [r for r in futures if r is not None]
 
-    # Sorting
     if sort == "price":
         results.sort(key=lambda x: x["metrics"].get("price") or 0, reverse=True)
     elif sort == "pe":
@@ -285,10 +312,9 @@ def get_stock(ticker_raw: str):
                 except Exception:
                     continue
 
-        meta = next((s for s in NSE_TICKERS if s["ticker"] == ticker),
+        meta = next((s for s in NSE_TICKERS if s["ticker"] == ticker.split(".")[0]),
                     {"name": ticker, "sector": "Unknown"})
 
-        # Build 5-year chart data from history arrays
         rev_history = fundamentals.get("revenue_history", [])
         ni_history  = fundamentals.get("net_income_history", [])
         dps_history = fundamentals.get("dps_history", [])
@@ -330,6 +356,176 @@ def get_stock(ticker_raw: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
+# ── CSV Upload endpoints ───────────────────────────────────────────────────
+
+@app.get("/api/template/prices")
+def download_price_template():
+    """Download CSV template for price upload — all NSE tickers pre-filled."""
+    csv_content = generate_price_template(NSE_TICKERS)
+    return Response(
+        content=csv_content,
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=nse_prices_template.csv"}
+    )
+
+@app.get("/api/template/fundamentals")
+def download_fundamentals_template():
+    """Download CSV template for fundamentals — pre-filled from seed data."""
+    from services.data_loader import _load_seed
+    seed = _load_seed()
+    csv_content = generate_fundamentals_template(NSE_TICKERS, seed)
+    return Response(
+        content=csv_content,
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=nse_fundamentals_template.csv"}
+    )
+
+@app.post("/api/upload/prices")
+async def upload_prices(file: UploadFile = File(...)):
+    """
+    Upload price CSV.
+    - Must have columns: ticker, date, close (open/high/low/volume optional)
+    - Merges with existing data — no data loss
+    - Warns if prices are stale
+    """
+    try:
+        content = await file.read()
+        mgr = get_manager()
+        result = mgr.upload_prices(content)
+        if not result["success"] and result.get("errors"):
+            raise HTTPException(status_code=400, detail="\n".join(result["errors"]))
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/upload/fundamentals")
+async def upload_fundamentals(file: UploadFile = File(...)):
+    """
+    Upload fundamentals CSV.
+    - Must have: ticker + at least one of eps/pe/roe/bvps
+    - Merges per field — existing data preserved for empty fields
+    - No data loss
+    """
+    try:
+        content = await file.read()
+        mgr = get_manager()
+        result = mgr.upload_fundamentals(content)
+        if not result["success"] and result.get("errors"):
+            raise HTTPException(status_code=400, detail="\n".join(result["errors"]))
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/upload/status")
+def upload_status():
+    """Returns metadata about last uploads — timestamps, counts, staleness."""
+    mgr = get_manager()
+    meta = mgr.get_upload_meta()
+    price_age  = mgr.get_prices_age_days()
+    fund_age   = mgr.get_fundamentals_age_days()
+    return {
+        "prices": {
+            "last_upload":   meta.get("prices_last_upload", "never"),
+            "ticker_count":  meta.get("prices_ticker_count", 0),
+            "age_days":      round(price_age, 1),
+            "status":        "ok" if price_age < 7 else "stale" if price_age < 14 else "critical",
+        },
+        "fundamentals": {
+            "last_upload":   meta.get("fundamentals_last_upload", "never"),
+            "ticker_count":  meta.get("fundamentals_ticker_count", 0),
+            "age_days":      round(fund_age, 1),
+            "status":        "ok" if fund_age < 90 else "stale",
+        },
+    }
+
+
+# ── Data freshness & health ────────────────────────────────────────────────
+
+@app.get("/api/data-freshness")
+def data_freshness():
+    try:
+        return {"freshness": loader.get_data_freshness(NSE_TICKERS)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/data-health")
+def data_health():
+    """Returns actionable alerts for the notification bell."""
+    try:
+        mgr = get_manager()
+        alerts = mgr.get_health_alerts(NSE_TICKERS)
+        return {"alerts": alerts, "count": len(alerts)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/data-sources")
+def data_sources():
+    """Returns current data source info."""
+    try:
+        mgr = get_manager()
+        meta = mgr.get_upload_meta()
+        return {
+            "mode": "manual_csv",
+            "prices_last_upload": meta.get("prices_last_upload", "never"),
+            "fundamentals_last_upload": meta.get("fundamentals_last_upload", "never"),
+            "prices_count": meta.get("prices_ticker_count", 0),
+            "fundamentals_count": meta.get("fundamentals_ticker_count", 0),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── Manual single-field entry (existing feature) ──────────────────────────
+
+@app.post("/api/missing-data")
+def save_missing_data(req: MissingDataRequest):
+    try:
+        ticker = req.ticker.upper()
+        try:
+            val = float(req.value)
+        except ValueError:
+            val = req.value
+        loader.save_missing_field(ticker, req.field_name, val, req.source)
+        prices       = loader.get_price_data(ticker)
+        fundamentals = loader.get_fundamentals(ticker)
+        scores       = scorer.compute_scores(prices, fundamentals)
+        _score_cache[ticker] = scores
+        return {"success": True, "new_scores": _clean_dict(scores)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/manual-price")
+def manual_price(req: ManualPriceRequest):
+    """Set a single ticker's price manually."""
+    try:
+        from io import BytesIO
+        import csv
+        ticker = req.ticker.upper().split(".")[0]
+        date   = req.date or datetime.now().strftime("%Y-%m-%d")
+        csv_str = f"ticker,date,open,high,low,close,volume\n{ticker},{date},{req.price},{req.price},{req.price},{req.price},0\n"
+        mgr = get_manager()
+        result = mgr.upload_prices(csv_str.encode())
+        return {"success": True, "ticker": ticker, "price": req.price}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/manual-fundamental")
+def manual_fundamental(req: ManualFundamentalRequest):
+    """Set a single fundamental field for a ticker."""
+    try:
+        ticker = req.ticker.upper().split(".")[0]
+        loader.save_missing_field(ticker, req.field, req.value, "manual_entry")
+        return {"success": True, "ticker": ticker, "field": req.field, "value": req.value}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── Portfolio ──────────────────────────────────────────────────────────────
 
 def _enrich(summary: dict) -> dict:
     total_invested = 0.0
@@ -383,11 +579,9 @@ def _enrich(summary: dict) -> dict:
     unr_total  = current_value - total_invested
     return_pct = unr_total / total_invested if total_invested > 0 else 0.0
 
-    # Average portfolio score
     scored = [h["total_score"] for h in enriched if h["total_score"] is not None]
     avg_score = round(sum(scored) / len(scored), 1) if scored else None
 
-    # Annualised return
     if enriched:
         avg_days = sum(h["holding_days"] for h in enriched) / len(enriched)
         years = max(avg_days / 365, 0.001)
@@ -453,7 +647,6 @@ def get_watchlist():
     wl = loader.get_watchlist()
     return {"watchlist": wl}
 
-
 @app.post("/api/watchlist/add")
 def add_watchlist(req: WatchlistRequest):
     ticker = req.ticker.upper()
@@ -461,7 +654,6 @@ def add_watchlist(req: WatchlistRequest):
         ticker += ".NR"
     wl = loader.add_to_watchlist(ticker)
     return {"watchlist": wl}
-
 
 @app.post("/api/watchlist/remove")
 def remove_watchlist(req: WatchlistRequest):
@@ -472,144 +664,8 @@ def remove_watchlist(req: WatchlistRequest):
     return {"watchlist": wl}
 
 
-# ── Data freshness ─────────────────────────────────────────────────────────
-
-@app.get("/api/data-freshness")
-def data_freshness():
-    """Returns per-ticker freshness status for the UI data tracker."""
-    try:
-        return {"freshness": loader.get_data_freshness(NSE_TICKERS)}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/api/refresh-all-prices")
-def refresh_all_prices():
-    """Force bulk price refresh from kenyanstocks.com — clears price cache first."""
-    try:
-        from pathlib import Path
-        import json
-        cache_file = Path(__file__).parent / "data" / "nse_cache" / "prices.json"
-        if cache_file.exists():
-            cache_file.unlink()  # delete so next call forces fresh fetch
-        from services.nse_scraper import get_all_prices
-        prices = get_all_prices()
-        live_count   = sum(1 for v in prices.values() if v.get("source") != "manual_stub")
-        stub_count   = sum(1 for v in prices.values() if v.get("source") == "manual_stub")
-        return {
-            "total":      len(prices),
-            "live":       live_count,
-            "stubs":      stub_count,
-            "source":     "kenyanstocks.com" if live_count > 0 else "manual_stubs",
-            "refreshed_at": datetime.now().isoformat(),
-            "prices":     {k: v.get("price") for k, v in prices.items()},
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/api/data-sources")
-def data_sources():
-    """Returns current data source health — which sources are live vs stub."""
-    try:
-        from pathlib import Path
-        import json
-        cache_file = Path(__file__).parent / "data" / "nse_cache" / "prices.json"
-        prices = {}
-        if cache_file.exists():
-            try:
-                with open(cache_file) as f:
-                    prices = json.load(f)
-            except Exception:
-                pass
-        source_counts = {}
-        for v in prices.values():
-            s = v.get("source", "unknown")
-            source_counts[s] = source_counts.get(s, 0) + 1
-        # Sample a few prices for verification
-        sample = {k: v.get("price") for k, v in list(prices.items())[:5]}
-        oldest = min((v.get("updated_at", "2000-01-01") for v in prices.values()), default="never")
-        return {
-            "sources":       source_counts,
-            "total_stocks":  len(prices),
-            "sample_prices": sample,
-            "oldest_update": oldest,
-            "is_live":       source_counts.get("kenyanstocks.com", 0) > 0,
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/api/data-health")
-def data_health():
-    """
-    Returns actionable data health alerts — missing fields, expired data, failed fetches.
-    Used by frontend notification bell to show what needs attention.
-    """
-    try:
-        from services.nse_scraper import get_data_health_report
-        return get_data_health_report(NSE_TICKERS)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-
-def refresh_stock(body: dict):
-    """Force re-fetch a single ticker bypassing cache."""
-    try:
-        ticker = str(body.get("ticker","")).upper()
-        if not ticker:
-            raise HTTPException(status_code=400, detail="ticker required")
-        base = ticker.split(".")[0]
-        # Clear NSE scraper caches for this ticker
-        from pathlib import Path
-        import json
-        cache_dir = Path(__file__).parent / "data" / "nse_cache"
-        for cache_file in ["prices.json", "fundamentals.json"]:
-            cp = cache_dir / cache_file
-            if cp.exists():
-                try:
-                    with open(cp) as f: data = json.load(f)
-                    data.pop(base, None)
-                    with open(cp,"w") as f: json.dump(data, f, indent=2)
-                except Exception: pass
-        # Fetch fresh
-        prices = loader.get_price_data(ticker)
-        funds  = loader.get_fundamentals(ticker)
-        return {
-            "ticker":      ticker,
-            "price_ok":    not prices.empty,
-            "fund_ok":     bool(funds.get("pe") or funds.get("eps")),
-            "last_update": funds.get("last_update",""),
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ── Missing data ───────────────────────────────────────────────────────────
-
-@app.post("/api/missing-data")
-def save_missing_data(req: MissingDataRequest):
-    try:
-        ticker = req.ticker.upper()
-        # Try to parse value as number
-        try:
-            val = float(req.value)
-        except ValueError:
-            val = req.value
-        loader.save_missing_field(ticker, req.field_name, val, req.source)
-        # Recompute score with new data
-        prices       = loader.get_price_data(ticker)
-        fundamentals = loader.get_fundamentals(ticker)
-        scores       = scorer.compute_scores(prices, fundamentals)
-        _score_cache[ticker] = scores
-        return {"success": True, "new_scores": _clean_dict(scores)}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
 # ══════════════════════════════════════════════════════════════════════════
-# GOLD MODULE — routes added below, zero impact on stock routes above
+# GOLD MODULE — unchanged
 # ══════════════════════════════════════════════════════════════════════════
 
 from services.gold import (
@@ -648,7 +704,6 @@ def gold_price():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @app.get("/api/gold/candles")
 def gold_candles(interval: str = "1h", outputsize: int = 300):
     try:
@@ -663,12 +718,12 @@ def gold_candles(interval: str = "1h", outputsize: int = 300):
                 "open":   round(_clean(row["open"]) or 0, 2),
                 "high":   round(_clean(row["high"]) or 0, 2),
                 "low":    round(_clean(row["low"])  or 0, 2),
-                "close":  round(_clean(row["close"])or 0, 2),
+                "close":  round(_clean(row["close"]) or 0, 2),
                 "volume": round(_clean(row.get("volume", 0)) or 0, 2),
                 "ema9":   round(_clean(row.get("ema9"))  or 0, 2),
                 "ema21":  round(_clean(row.get("ema21")) or 0, 2),
                 "ema50":  round(_clean(row.get("ema50")) or 0, 2),
-                "ema200": round(_clean(row.get("ema200"))or 0, 2),
+                "ema200": round(_clean(row.get("ema200")) or 0, 2),
                 "rsi":    round(_clean(row.get("rsi14")) or 0, 1),
                 "macd_hist": round(_clean(row.get("macd_hist")) or 0, 4),
                 "atr":    round(_clean(row.get("atr14")) or 0, 2),
@@ -677,18 +732,16 @@ def gold_candles(interval: str = "1h", outputsize: int = 300):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @app.get("/api/gold/signal")
 def gold_signal():
     try:
-        df_h4  = fetch_ohlcv(interval="4h",   outputsize=500)
-        df_h1  = fetch_ohlcv(interval="1h",   outputsize=300)
-        df_m30 = fetch_ohlcv(interval="30min",outputsize=200)
+        df_h4  = fetch_ohlcv(interval="4h",    outputsize=500)
+        df_h1  = fetch_ohlcv(interval="1h",    outputsize=300)
+        df_m30 = fetch_ohlcv(interval="30min", outputsize=200)
         signal = generate_signal(df_h4, df_h1, df_m30)
         return signal
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @app.post("/api/gold/backtest")
 def gold_backtest(req: BacktestRequest):
@@ -696,29 +749,19 @@ def gold_backtest(req: BacktestRequest):
         df = fetch_ohlcv(interval=req.interval, outputsize=1000)
         if df.empty:
             raise HTTPException(status_code=400, detail="No price data available for backtest")
-        result = run_backtest(
-            df,
-            start_date=req.start_date,
-            end_date=req.end_date,
-            atr_sl_mult=req.atr_sl_mult,
-            atr_tp_mult=req.atr_tp_mult,
-            min_score=req.min_score,
-        )
+        result = run_backtest(df, start_date=req.start_date, end_date=req.end_date,
+                              atr_sl_mult=req.atr_sl_mult, atr_tp_mult=req.atr_tp_mult,
+                              min_score=req.min_score)
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @app.get("/api/gold/demo/trades")
 def get_demo_trades():
     try:
-        return {
-            "trades":      demo_manager.get_trades(),
-            "performance": demo_manager.get_performance(),
-        }
+        return {"trades": demo_manager.get_trades(), "performance": demo_manager.get_performance()}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @app.post("/api/gold/demo/open")
 def open_demo_trade(req: DemoTradeRequest):
@@ -726,12 +769,10 @@ def open_demo_trade(req: DemoTradeRequest):
         trade = demo_manager.open_trade(
             direction=req.direction, entry=req.entry,
             sl=req.sl, tp1=req.tp1, tp2=req.tp2,
-            score=req.score, lot_size=req.lot_size,
-        )
+            score=req.score, lot_size=req.lot_size)
         return {"trade": trade, "performance": demo_manager.get_performance()}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @app.post("/api/gold/demo/close")
 def close_demo_trade(req: CloseTradeRequest):
@@ -740,7 +781,6 @@ def close_demo_trade(req: CloseTradeRequest):
         return {"trades": trades, "performance": demo_manager.get_performance()}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @app.get("/api/gold/sr-fib")
 def gold_sr_fib():
@@ -756,7 +796,6 @@ def gold_sr_fib():
 
 
 if __name__ == "__main__":
-    import os
     port = int(os.environ.get("PORT", 8000))
     reload = os.environ.get("ENVIRONMENT", "development") == "development"
     uvicorn.run("app:app", host="0.0.0.0", port=port, reload=reload)

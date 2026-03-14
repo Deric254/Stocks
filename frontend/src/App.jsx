@@ -950,33 +950,34 @@ function Watchlist({stocks,watchlist,onSelect,onTrade}){
 
 
 // ── Data Freshness Screen ───────────────────────────────────────────────────
+// ── Data Freshness Screen (CSV Upload) ----------------------------------------
 function DataFreshness({onToast, focusTicker=null, focusField=null}){
-  const [data, setData]         = useState([]);
-  const [loading, setLoading]   = useState(true);
-  const [refreshing, setRefreshing] = useState({});
-  const [bulkRefreshing, setBulkRefreshing] = useState(false);
-  const [sourceInfo, setSourceInfo] = useState(null);
-  const [editRow, setEditRow]   = useState(null);   // {ticker, field}
-  const [editVal, setEditVal]   = useState("");
-  const [saving, setSaving]     = useState(false);
-  const [filter, setFilter]     = useState("all");  // all|issues|stub|no_fund
+  const [data, setData]           = useState([]);
+  const [loading, setLoading]     = useState(true);
+  const [uploadStatus, setUploadStatus] = useState(null);
+  const [editRow, setEditRow]     = useState(null);
+  const [editVal, setEditVal]     = useState("");
+  const [saving, setSaving]       = useState(false);
+  const [filter, setFilter]       = useState("all");
+  const [uploadingPrice, setUploadingPrice]   = useState(false);
+  const [uploadingFund, setUploadingFund]     = useState(false);
+  const [uploadResult, setUploadResult]       = useState(null);
   const rowRefs = useRef({});
 
   const load = () => {
     setLoading(true);
     Promise.all([
       get("/api/data-freshness"),
-      get("/api/data-sources"),
+      get("/api/upload/status"),
     ]).then(([d, s]) => {
       setData(d.freshness||[]);
-      setSourceInfo(s);
+      setUploadStatus(s);
       setLoading(false);
     }).catch(()=>setLoading(false));
   };
 
-  useEffect(()=>{ load(); const iv=setInterval(load,30000); return()=>clearInterval(iv); },[]);
+  useEffect(()=>{ load(); const iv=setInterval(load,60000); return()=>clearInterval(iv); },[]);
 
-  // Deep-link: scroll to focused ticker when data loads
   useEffect(()=>{
     if(focusTicker && data.length>0){
       setTimeout(()=>{
@@ -986,24 +987,39 @@ function DataFreshness({onToast, focusTicker=null, focusField=null}){
     }
   },[focusTicker, data]);
 
-  const forceRefresh = async (ticker) => {
-    setRefreshing(r=>({...r,[ticker]:true}));
+  const downloadTemplate = async (type) => {
     try{
-      const r = await post("/api/refresh-stock",{ticker});
-      onToast(`${ticker}: price ${r.price_ok?"✅":"❌"}  fundamentals ${r.fund_ok?"✅":"❌"}`,"info");
-      load();
-    }catch(e){ onToast("Refresh failed","error"); }
-    setRefreshing(r=>({...r,[ticker]:false}));
+      const a = document.createElement("a");
+      a.href = `${API}/api/template/${type}`;
+      a.download = `nse_${type}_template.csv`;
+      a.click();
+    }catch(e){ onToast("Download failed","error"); }
   };
 
-  const refreshAllPrices = async () => {
-    setBulkRefreshing(true);
+  const handleUploadPrices = async (formData) => {
+    setUploadingPrice(true); setUploadResult(null);
     try{
-      const r = await post("/api/refresh-all-prices",{});
-      onToast(`Refreshed: ${r.live} live · ${r.stubs} stubs`,"info");
+      const r = await fetch(`${API}/api/upload/prices`,{method:"POST",body:formData});
+      const d = await r.json();
+      if(!r.ok) throw new Error(d.detail||"Upload failed");
+      onToast(`Prices uploaded: ${d.updated} tickers updated`,"info");
+      setUploadResult({type:"prices",...d});
       load();
-    }catch(e){ onToast("Bulk refresh failed","error"); }
-    setBulkRefreshing(false);
+    }catch(e){ onToast(`Price upload failed: ${e.message}`,"error"); setUploadResult({error:e.message}); }
+    setUploadingPrice(false);
+  };
+
+  const handleUploadFundamentals = async (formData) => {
+    setUploadingFund(true); setUploadResult(null);
+    try{
+      const r = await fetch(`${API}/api/upload/fundamentals`,{method:"POST",body:formData});
+      const d = await r.json();
+      if(!r.ok) throw new Error(d.detail||"Upload failed");
+      onToast(`Fundamentals uploaded: ${d.updated} tickers updated`,"info");
+      setUploadResult({type:"fundamentals",...d});
+      load();
+    }catch(e){ onToast(`Fundamentals upload failed: ${e.message}`,"error"); setUploadResult({error:e.message}); }
+    setUploadingFund(false);
   };
 
   const openEdit = (ticker, field, currentVal="") => {
@@ -1018,62 +1034,160 @@ function DataFreshness({onToast, focusTicker=null, focusField=null}){
       const {ticker, field} = editRow;
       if(field==="PRICE"){
         await post("/api/manual-price",{ticker, price: parseFloat(editVal)});
-        onToast(`${ticker} price set to KES ${editVal} ✅`,"info");
+        onToast(`${ticker} price set to KES ${editVal}`,"info");
       } else {
         await post("/api/manual-fundamental",{ticker, field:field.toLowerCase(), value: parseFloat(editVal)});
-        onToast(`${ticker} ${field} set to ${editVal} ✅`,"info");
+        onToast(`${ticker} ${field} saved`,"info");
       }
-      setEditRow(null); setEditVal("");
-      load();
+      setEditRow(null); setEditVal(""); load();
     }catch(e){ onToast(`Save failed: ${e.message}`,"error"); }
     setSaving(false);
   };
 
+  const ps = uploadStatus?.prices;
+  const fs = uploadStatus?.fundamentals;
+
   const summary = {
-    live:    data.filter(d=>d.freshness==="live").length,
-    today:   data.filter(d=>d.freshness==="today").length,
-    stale:   data.filter(d=>d.freshness==="stale").length,
-    issues:  data.filter(d=>d.issue_count>0).length,
+    fresh:  data.filter(d=>d.freshness==="fresh"||d.freshness==="recent").length,
+    stale:  data.filter(d=>d.freshness==="stale"||d.freshness==="old").length,
+    noData: data.filter(d=>!d.price||d.freshness==="no_data").length,
+    issues: data.filter(d=>d.issue_count>0).length,
   };
 
   const filtered = data.filter(d=>{
     if(filter==="issues") return d.issue_count>0;
-    if(filter==="stub")   return d.freshness==="stub"||d.freshness==="no_data";
+    if(filter==="nodata") return !d.price||d.freshness==="no_data";
     if(filter==="no_fund") return !d.has_eps||!d.has_pe||!d.has_roe;
     return true;
   });
 
   const card = {background:C.surface,border:"1px solid "+C.borderGray,borderRadius:13,padding:20,boxShadow:"0 2px 12px #0000000A"};
-  const isLive = sourceInfo?.is_live;
+  const inp  = {padding:"8px 12px",borderRadius:8,border:"1.5px solid "+C.green,fontSize:13,fontFamily:"inherit",outline:"none"};
 
   return(
     <div>
-      {/* Source banner */}
-      {sourceInfo&&(
-        <div style={{...card,marginBottom:16,background:isLive?"#f0fdf4":"#fff7ed",border:"1px solid "+(isLive?"#86efac":"#fde68a")}}>
-          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:10}}>
+      {/* ── Two upload panels ── */}
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16,marginBottom:20}}>
+
+        {/* Prices */}
+        <div style={{...card,border:"1.5px solid "+C.borderGray}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:12}}>
             <div>
-              <div style={{fontSize:13,fontWeight:700,color:isLive?"#166534":"#92400e",marginBottom:4}}>
-                {isLive?"✅ Live prices active — kenyanstocks.com":"⚠️ Live fetch failed — showing reference prices"}
-              </div>
-              <div style={{fontSize:11,color:isLive?"#166534":"#92400e"}}>
-                Sources: {Object.entries(sourceInfo.sources||{}).map(([s,c])=>`${s}(${c})`).join(", ")||"none"} · Sample: {Object.entries(sourceInfo.sample_prices||{}).slice(0,3).map(([k,v])=>`${k}=${v}`).join(", ")}
-              </div>
+              <div style={{fontSize:14,fontWeight:800,color:C.text}}>Upload Prices</div>
+              <div style={{fontSize:11,color:C.muted,marginTop:2}}>Update weekly. Only close price is required.</div>
             </div>
-            <button onClick={refreshAllPrices} disabled={bulkRefreshing}
-              style={{padding:"9px 18px",borderRadius:9,border:"none",background:isLive?C.green:"#f97316",color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:"inherit",opacity:bulkRefreshing?0.6:1}}>
-              {bulkRefreshing?"Fetching…":"🔄 Refresh All Prices"}
-            </button>
+            {ps&&(
+              <div style={{textAlign:"right",flexShrink:0}}>
+                <div style={{fontSize:11,fontWeight:700,color:ps.status==="ok"?C.green:ps.status==="stale"?C.orange:C.red}}>
+                  {ps.status==="ok"?"Fresh":ps.status==="stale"?"Stale":"Outdated"}
+                </div>
+                <div style={{fontSize:10,color:C.muted}}>{ps.ticker_count} stocks, {ps.age_days}d old</div>
+              </div>
+            )}
           </div>
+          <button onClick={()=>downloadTemplate("prices")}
+            style={{width:"100%",padding:"8px 0",borderRadius:8,border:"1.5px solid "+C.green,background:"transparent",
+              color:C.green,fontWeight:700,fontSize:12,cursor:"pointer",fontFamily:"inherit",marginBottom:10}}>
+            Download Price Template (all stocks)
+          </button>
+          <div
+            onDragOver={e=>{e.preventDefault();e.currentTarget.style.background=C.greenBg;}}
+            onDragLeave={e=>{e.currentTarget.style.background="#fafafa";}}
+            onDrop={e=>{e.preventDefault();e.currentTarget.style.background="#fafafa";
+              const fd=new FormData();fd.append("file",e.dataTransfer.files[0]);handleUploadPrices(fd);}}
+            onClick={()=>document.getElementById("price-inp").click()}
+            style={{border:"2px dashed "+C.borderGray,borderRadius:10,padding:"18px",textAlign:"center",
+              cursor:uploadingPrice?"wait":"pointer",background:"#fafafa",transition:"background .15s"}}>
+            <div style={{fontSize:20,marginBottom:4}}>{uploadingPrice?"...":"+"}</div>
+            <div style={{fontSize:12,color:C.muted,fontWeight:600}}>
+              {uploadingPrice?"Uploading & validating...":"Drop CSV or click to upload"}
+            </div>
+            <input id="price-inp" type="file" accept=".csv" style={{display:"none"}}
+              onChange={e=>{const fd=new FormData();fd.append("file",e.target.files[0]);handleUploadPrices(fd);e.target.value="";}}/>
+          </div>
+          {ps?.last_upload&&ps.last_upload!=="never"&&(
+            <div style={{fontSize:10,color:C.dim,marginTop:8}}>
+              Last upload: {new Date(ps.last_upload).toLocaleString("en-KE")}
+            </div>
+          )}
+        </div>
+
+        {/* Fundamentals */}
+        <div style={{...card,border:"1.5px solid "+C.borderGray}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:12}}>
+            <div>
+              <div style={{fontSize:14,fontWeight:800,color:C.text}}>Upload Fundamentals</div>
+              <div style={{fontSize:11,color:C.muted,marginTop:2}}>Update quarterly. EPS, PE, ROE, dividends, history.</div>
+            </div>
+            {fs&&(
+              <div style={{textAlign:"right",flexShrink:0}}>
+                <div style={{fontSize:11,fontWeight:700,color:fs.status==="ok"?C.green:C.orange}}>
+                  {fs.status==="ok"?"Current":"Check age"}
+                </div>
+                <div style={{fontSize:10,color:C.muted}}>{fs.ticker_count} stocks, {fs.age_days}d old</div>
+              </div>
+            )}
+          </div>
+          <button onClick={()=>downloadTemplate("fundamentals")}
+            style={{width:"100%",padding:"8px 0",borderRadius:8,border:"1.5px dashed "+C.blue,background:"transparent",
+              color:C.blue,fontWeight:700,fontSize:12,cursor:"pointer",fontFamily:"inherit",marginBottom:10}}>
+            Download Fundamentals Template (pre-filled)
+          </button>
+          <div
+            onDragOver={e=>{e.preventDefault();e.currentTarget.style.background=C.blueLt;}}
+            onDragLeave={e=>{e.currentTarget.style.background="#fafafa";}}
+            onDrop={e=>{e.preventDefault();e.currentTarget.style.background="#fafafa";
+              const fd=new FormData();fd.append("file",e.dataTransfer.files[0]);handleUploadFundamentals(fd);}}
+            onClick={()=>document.getElementById("fund-inp").click()}
+            style={{border:"2px dashed "+C.borderGray,borderRadius:10,padding:"18px",textAlign:"center",
+              cursor:uploadingFund?"wait":"pointer",background:"#fafafa",transition:"background .15s"}}>
+            <div style={{fontSize:20,marginBottom:4}}>{uploadingFund?"...":"+"}</div>
+            <div style={{fontSize:12,color:C.muted,fontWeight:600}}>
+              {uploadingFund?"Uploading & validating...":"Drop CSV or click to upload"}
+            </div>
+            <input id="fund-inp" type="file" accept=".csv" style={{display:"none"}}
+              onChange={e=>{const fd=new FormData();fd.append("file",e.target.files[0]);handleUploadFundamentals(fd);e.target.value="";}}/>
+          </div>
+          {fs?.last_upload&&fs.last_upload!=="never"&&(
+            <div style={{fontSize:10,color:C.dim,marginTop:8}}>
+              Last upload: {new Date(fs.last_upload).toLocaleString("en-KE")}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Upload result */}
+      {uploadResult&&(
+        <div style={{...card,marginBottom:16,background:uploadResult.error?C.redLt:C.greenLt,
+          border:"1.5px solid "+(uploadResult.error?C.red:C.green)}}>
+          {uploadResult.error?(
+            <div style={{color:C.red,fontSize:13,fontWeight:700}}>Upload Error: {uploadResult.error}</div>
+          ):(
+            <div>
+              <div style={{fontSize:13,fontWeight:700,color:C.greenDk,marginBottom:6}}>
+                {uploadResult.type==="prices"?"Prices":"Fundamentals"} uploaded: {uploadResult.updated} tickers updated
+              </div>
+              {uploadResult.errors?.length>0&&(
+                <div style={{fontSize:11,color:C.orange,marginBottom:4}}>
+                  {uploadResult.errors.length} warnings:
+                  {uploadResult.errors.slice(0,5).map((e,i)=><div key={i} style={{marginLeft:8}}>- {e}</div>)}
+                  {uploadResult.errors.length>5&&<div style={{marginLeft:8}}>...and {uploadResult.errors.length-5} more</div>}
+                </div>
+              )}
+              <div style={{fontSize:11,color:C.muted}}>Skipped: {uploadResult.skipped||0} | Total in system: {uploadResult.total}</div>
+            </div>
+          )}
+          <button onClick={()=>setUploadResult(null)}
+            style={{marginTop:8,fontSize:11,color:C.muted,background:"none",border:"none",cursor:"pointer"}}>dismiss</button>
         </div>
       )}
 
       {/* Summary cards */}
       <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:12,marginBottom:20}}>
         {[
-          {l:"Live (< 4h)",   v:summary.live,   c:C.green,  f:"all"},
-          {l:"Today (< 24h)", v:summary.today,  c:"#86efac",f:"all"},
-          {l:"Stale / Stub",  v:summary.stale,  c:C.orange, f:"stub"},
+          {l:"Fresh (< 7d)",  v:summary.fresh,  c:C.green,  f:"all"},
+          {l:"Stale (7-14d)", v:summary.stale,  c:C.orange, f:"nodata"},
+          {l:"No Price",      v:summary.noData, c:C.red,    f:"nodata"},
           {l:"Has Issues",    v:summary.issues, c:C.red,    f:"issues"},
         ].map(({l,v,c,f})=>(
           <div key={l} onClick={()=>setFilter(f===filter?"all":f)} style={{...card,borderTop:"3px solid "+c,cursor:"pointer",opacity:filter!=="all"&&filter!==f?0.5:1,transition:"opacity .15s"}}>
@@ -1084,27 +1198,26 @@ function DataFreshness({onToast, focusTicker=null, focusField=null}){
         ))}
       </div>
 
-      {/* Inline edit modal */}
+      {/* Inline edit */}
       {editRow&&(
         <div style={{...card,marginBottom:16,background:"#f0fdf4",border:"2px solid "+C.green}}>
           <div style={{fontSize:13,fontWeight:700,color:C.text,marginBottom:10}}>
-            ✏️ Set {editRow.field} for <span style={{color:C.green}}>{editRow.ticker}</span>
+            Edit {editRow.field} for <span style={{color:C.green}}>{editRow.ticker}</span>
           </div>
           <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
             <input value={editVal} onChange={e=>setEditVal(e.target.value)}
               onKeyDown={e=>e.key==="Enter"&&saveEdit()}
               placeholder={editRow.field==="PRICE"?"e.g. 75.50":"e.g. 8.5"}
-              style={{padding:"8px 12px",borderRadius:8,border:"1.5px solid "+C.green,fontSize:13,width:160,fontFamily:"inherit",outline:"none"}}
-              autoFocus/>
+              style={{...inp,width:160}} autoFocus/>
             <div style={{fontSize:11,color:C.muted,flex:1}}>
-              {editRow.field==="PRICE"?"Enter current market price in KES":
-               editRow.field==="ROE"?"Enter as decimal (e.g. 0.18 = 18%)":
-               editRow.field==="DIVIDEND_YIELD"?"Enter as decimal (e.g. 0.05 = 5%)":
-               "Enter value from company annual report"}
+              {editRow.field==="PRICE"?"Current market price in KES":
+               editRow.field==="ROE"?"Decimal e.g. 0.18 = 18%":
+               editRow.field==="DIVIDEND_YIELD"?"Decimal e.g. 0.05 = 5%":
+               "Value from company annual report"}
             </div>
             <button onClick={saveEdit} disabled={saving||!editVal.trim()}
               style={{padding:"8px 20px",borderRadius:8,border:"none",background:C.green,color:"#fff",fontWeight:700,fontSize:13,cursor:"pointer",fontFamily:"inherit",opacity:saving||!editVal.trim()?0.5:1}}>
-              {saving?"Saving…":"Save ✓"}
+              {saving?"Saving...":"Save"}
             </button>
             <button onClick={()=>{setEditRow(null);setEditVal("");}}
               style={{padding:"8px 14px",borderRadius:8,border:"1px solid "+C.borderGray,background:"transparent",color:C.muted,fontSize:12,cursor:"pointer",fontFamily:"inherit"}}>
@@ -1116,7 +1229,7 @@ function DataFreshness({onToast, focusTicker=null, focusField=null}){
 
       {/* Filter tabs */}
       <div style={{display:"flex",gap:8,marginBottom:14,flexWrap:"wrap"}}>
-        {[["all","All Stocks"],["issues","⚠️ Has Issues"],["stub","🔴 Stub/No Data"],["no_fund","📊 Missing Fundamentals"]].map(([v,l])=>(
+        {[["all","All Stocks"],["issues","Has Issues"],["nodata","No Price"],["no_fund","Missing Fundamentals"]].map(([v,l])=>(
           <button key={v} onClick={()=>setFilter(v)}
             style={{padding:"6px 14px",borderRadius:20,border:"1.5px solid "+(filter===v?C.green:C.borderGray),background:filter===v?C.greenLt:"transparent",color:filter===v?C.greenDk:C.muted,fontSize:11,fontWeight:filter===v?700:400,cursor:"pointer",fontFamily:"inherit"}}>
             {l}
@@ -1128,12 +1241,12 @@ function DataFreshness({onToast, focusTicker=null, focusField=null}){
 
       {/* Table */}
       <div style={card}>
-        {loading?<Loader text="Loading data status…"/>:(
+        {loading?<Loader text="Loading data status..."/>:(
           <div style={{overflowX:"auto"}}>
             <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
               <thead>
                 <tr style={{background:C.greenBg,borderBottom:"2px solid "+C.border}}>
-                  {["Stock","Price","Source","Price Age","Fundamentals","Issues","Actions"].map(h=>(
+                  {["Stock","Price","Price Date","Fundamentals","Fund Age","Issues","Quick Edit"].map(h=>(
                     <th key={h} style={{padding:"9px 12px",textAlign:"left",fontSize:10,color:C.muted,fontWeight:700,textTransform:"uppercase",whiteSpace:"nowrap"}}>{h}</th>
                   ))}
                 </tr>
@@ -1141,53 +1254,55 @@ function DataFreshness({onToast, focusTicker=null, focusField=null}){
               <tbody>
                 {filtered.map(d=>{
                   const hasIssues = d.issue_count>0;
-                  const isStub = d.freshness==="stub"||d.freshness==="no_data";
+                  const noPrice   = !d.price || d.freshness==="no_data";
+                  const freshCol  = d.freshness==="fresh"?C.green:d.freshness==="recent"?"#86efac":d.freshness==="stale"?C.orange:C.red;
                   return(
                     <tr key={d.ticker} ref={el=>rowRefs.current[d.ticker]=el}
-                      style={{borderBottom:"1px solid "+C.borderGray,background:hasIssues?"#fffbeb":C.surface,transition:"background .2s"}}>
+                      style={{borderBottom:"1px solid "+C.borderGray,background:noPrice?"#fff1f2":hasIssues?"#fffbeb":C.surface,transition:"background .2s"}}>
                       <td style={{padding:"10px 12px"}}>
                         <div style={{fontWeight:700,color:C.text,fontSize:13}}>{d.ticker}</div>
                         <div style={{fontSize:10,color:C.muted}}>{d.name}</div>
                         <div style={{fontSize:9,color:C.dim}}>{d.sector}</div>
                       </td>
                       <td style={{padding:"10px 12px"}}>
-                        <div style={{fontWeight:700,color:isStub?C.red:C.text,fontSize:13}}>
-                          {d.price>0?"KES "+Number(d.price).toLocaleString("en-KE",{minimumFractionDigits:2,maximumFractionDigits:2}):"—"}
+                        <div style={{fontWeight:700,color:noPrice?C.red:C.text,fontSize:13}}>
+                          {d.price>0?"KES "+Number(d.price).toLocaleString("en-KE",{minimumFractionDigits:2,maximumFractionDigits:2}):"no data"}
                         </div>
-                        <button onClick={()=>openEdit(d.ticker,"PRICE",d.price)}
-                          style={{fontSize:9,color:C.green,background:"none",border:"none",cursor:"pointer",padding:0,fontFamily:"inherit",marginTop:2}}>
-                          ✏️ edit price
-                        </button>
-                      </td>
-                      <td style={{padding:"10px 12px",fontSize:11,color:isStub?C.red:C.muted,fontWeight:isStub?700:400}}>
-                        {d.source==="kenyanstocks.com"?"🟢 live scrape":
-                         d.source==="manual_override"?"🔵 manual":
-                         d.source==="manual_stub"?"🔴 reference":
-                         d.source||"—"}
+                        <div style={{display:"flex",alignItems:"center",gap:4,marginTop:3}}>
+                          <span style={{width:7,height:7,borderRadius:"50%",background:freshCol,display:"inline-block",flexShrink:0}}/>
+                          <span style={{fontSize:9,color:freshCol,fontWeight:700}}>{d.freshness||"no_data"}</span>
+                        </div>
                       </td>
                       <td style={{padding:"10px 12px"}}>
-                        <span style={{fontSize:11,color:d.price_age_h<4?C.green:d.price_age_h<24?"#92400e":C.red,fontWeight:600}}>
-                          {d.price_age_h>=9990?"never":d.price_age_h<1?(d.price_age_h*60).toFixed(0)+"m":d.price_age_h.toFixed(1)+"h"}
-                        </span>
+                        <div style={{fontSize:11,color:d.price_date?C.text:C.dim}}>{d.price_date||"never"}</div>
+                        <div style={{fontSize:9,color:C.muted,marginTop:2}}>
+                          {d.price_age_h>=9990?"":d.price_age_h<24?d.price_age_h.toFixed(1)+"h ago":(d.price_age_h/24).toFixed(1)+"d ago"}
+                        </div>
                       </td>
                       <td style={{padding:"10px 12px"}}>
                         <div style={{display:"flex",gap:4,flexWrap:"wrap"}}>
                           {[["PE",d.has_pe],["EPS",d.has_eps],["ROE",d.has_roe],["BVPS",d.has_bvps],["DIV",d.has_div]].map(([f,ok])=>(
                             <span key={f} onClick={!ok?()=>openEdit(d.ticker,f):undefined}
-                              style={{fontSize:9,fontWeight:700,padding:"2px 6px",borderRadius:6,
+                              style={{fontSize:9,fontWeight:700,padding:"2px 5px",borderRadius:5,
                                 background:ok?C.greenLt:C.redLt,color:ok?C.greenDk:C.red,
-                                cursor:ok?"default":"pointer",border:"1px solid "+(ok?C.green+"44":C.red+"44"),
-                                title:ok?"":"Click to enter "+f}}>
-                              {ok?"✓":"+"}  {f}
+                                cursor:ok?"default":"pointer",border:"1px solid "+(ok?C.green+"44":C.red+"44")}}>
+                              {ok?"ok":"+"} {f}
                             </span>
                           ))}
                         </div>
                         <div style={{fontSize:9,color:C.muted,marginTop:3}}>
-                          {d.fund_source==="seed_fy2024"?"📋 FY2024 filing":
-                           d.fund_source&&d.fund_source.includes("afx")?"🌐 live":
-                           d.fund_source&&d.fund_source.includes("manual")?"🔵 manual":
-                           "—"}
+                          {d.fund_source==="manual_csv"?"CSV upload":
+                           d.fund_source&&d.fund_source.includes("annual")?"Annual report":
+                           d.fund_source&&d.fund_source.includes("seed")?"FY2024 seed":
+                           d.fund_source&&d.fund_source.includes("manual")?"Manual entry":
+                           d.fund_source||""}
+                          {d.fiscal_year?" FY"+d.fiscal_year:""}
                         </div>
+                      </td>
+                      <td style={{padding:"10px 12px"}}>
+                        <span style={{fontSize:11,fontWeight:600,color:d.fund_age_days<90?C.green:d.fund_age_days<180?C.orange:C.red}}>
+                          {d.fund_age_days>=9990?"no data":Math.round(d.fund_age_days)+"d old"}
+                        </span>
                       </td>
                       <td style={{padding:"10px 12px",maxWidth:200}}>
                         {hasIssues?(
@@ -1195,20 +1310,24 @@ function DataFreshness({onToast, focusTicker=null, focusField=null}){
                             {d.issues.slice(0,3).map((iss,i)=>(
                               <div key={i} onClick={()=>openEdit(d.ticker,iss.field)}
                                 style={{fontSize:10,color:iss.severity==="critical"?C.red:"#92400e",marginBottom:3,cursor:"pointer",display:"flex",alignItems:"center",gap:4}}>
-                                <span>{iss.severity==="critical"?"🔴":"🟡"}</span>
+                                <span>{iss.severity==="critical"?"[!]":"[w]"}</span>
                                 <span style={{textDecoration:"underline"}}>{iss.message}</span>
                               </div>
                             ))}
                             {d.issues.length>3&&<div style={{fontSize:9,color:C.muted}}>+{d.issues.length-3} more</div>}
                           </div>
                         ):(
-                          <span style={{fontSize:11,color:C.green,fontWeight:600}}>✅ All good</span>
+                          <span style={{fontSize:11,color:C.green,fontWeight:600}}>All good</span>
                         )}
                       </td>
                       <td style={{padding:"10px 12px",whiteSpace:"nowrap"}}>
-                        <button onClick={()=>forceRefresh(d.ticker)} disabled={!!refreshing[d.ticker]}
-                          style={{padding:"5px 12px",borderRadius:7,border:"1.5px solid "+C.green,background:"transparent",color:C.green,fontWeight:700,fontSize:11,cursor:refreshing[d.ticker]?"not-allowed":"pointer",opacity:refreshing[d.ticker]?0.5:1,fontFamily:"inherit"}}>
-                          {refreshing[d.ticker]?"⏳":"↻ Refresh"}
+                        <button onClick={()=>openEdit(d.ticker,"PRICE",d.price)}
+                          style={{padding:"4px 10px",borderRadius:6,border:"1.5px solid "+C.green,background:"transparent",color:C.green,fontWeight:700,fontSize:10,cursor:"pointer",fontFamily:"inherit",display:"block",marginBottom:4}}>
+                          Edit Price
+                        </button>
+                        <button onClick={()=>openEdit(d.ticker,"PE","")}
+                          style={{padding:"4px 10px",borderRadius:6,border:"1.5px solid "+C.blue,background:"transparent",color:C.blue,fontWeight:700,fontSize:10,cursor:"pointer",fontFamily:"inherit",display:"block"}}>
+                          Edit P/E
                         </button>
                       </td>
                     </tr>
@@ -1219,9 +1338,33 @@ function DataFreshness({onToast, focusTicker=null, focusField=null}){
           </div>
         )}
       </div>
+
+      {/* How-to */}
+      <div style={{...card,marginTop:16,background:"#f8faff",border:"1px solid "+C.blueLt}}>
+        <div style={{fontSize:12,fontWeight:700,color:C.blue,marginBottom:10}}>How to update your data</div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16,fontSize:11,color:C.textMid}}>
+          <div style={{background:"#fff",borderRadius:9,padding:14,border:"1px solid "+C.borderGray}}>
+            <div style={{fontWeight:700,color:C.green,marginBottom:6}}>Prices — update weekly</div>
+            <div style={{marginBottom:3}}>1. Click <strong>Download Price Template</strong> above</div>
+            <div style={{marginBottom:3}}>2. Fill in the <em>close</em> column for each stock</div>
+            <div style={{marginBottom:3}}>3. open/high/low/volume are optional</div>
+            <div style={{marginBottom:6}}>4. Save CSV and upload via drag-drop or click</div>
+            <div style={{color:C.muted,fontSize:10}}>Date format: YYYY-MM-DD. Existing history is preserved — no data lost.</div>
+          </div>
+          <div style={{background:"#fff",borderRadius:9,padding:14,border:"1px solid "+C.borderGray}}>
+            <div style={{fontWeight:700,color:C.blue,marginBottom:6}}>Fundamentals — update quarterly</div>
+            <div style={{marginBottom:3}}>1. Click <strong>Download Fundamentals Template</strong> above</div>
+            <div style={{marginBottom:3}}>2. Template is pre-filled with existing values</div>
+            <div style={{marginBottom:3}}>3. Update only the values that have changed</div>
+            <div style={{marginBottom:6}}>4. History: semicolon-separated oldest to newest e.g. 50B;60B;70B</div>
+            <div style={{color:C.muted,fontSize:10}}>ROE/margin/yield as decimals: 0.18 = 18%. Existing fields preserved if left blank.</div>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
+
 
 // ══════════════════════════════════════════════════════════════════════════
 // GOLD TRADING MODULE
