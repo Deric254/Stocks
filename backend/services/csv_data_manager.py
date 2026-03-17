@@ -195,47 +195,103 @@ def _normalise_row(row: dict, alias_map: dict) -> dict:
 # ── Template generation ───────────────────────────────────────────────────────
 
 def generate_price_template(tickers: list) -> str:
+    """
+    Price template pre-filled from live scraper.
+    - Scraper hit first (kenyanstocks.com bulk)
+    - Manual stubs fill any gaps
+    - Cells the scraper couldn't find left EMPTY so they show red in Excel/Sheets
+    """
+    # Import here to avoid circular imports at module load
+    live_prices = {}
+    try:
+        from services.nse_scraper import get_all_prices
+        live_prices = get_all_prices()   # cached 4h — fast on repeat calls
+        print(f"[template/prices] scraper returned {len(live_prices)} prices")
+    except Exception as e:
+        print(f"[template/prices] scraper unavailable: {e}")
+
     out = io.StringIO()
     w = csv.DictWriter(out, fieldnames=PRICE_FIELDS)
     w.writeheader()
     for t in tickers:
-        w.writerow({"ticker": t["ticker"], "price": ""})
+        base = t["ticker"].split(".")[0].upper()
+        entry = live_prices.get(base, {})
+        price = entry.get("price")
+        # Leave empty if scraper couldn't find it — user fills in the red cell
+        w.writerow({"ticker": base, "price": price if price else ""})
     return out.getvalue()
 
 
 def generate_fundamentals_template(tickers: list, seed: dict) -> str:
+    """
+    Fundamentals template pre-filled from scraper then seed.
+    Priority: scraper (live afx.kwayisi.org) > seed (annual reports) > empty (red cell).
+    Empty cells = scraper AND seed both missing — user fills those in.
+    """
+    live_funds = {}
+    try:
+        from services.nse_scraper import get_fundamentals as scraper_get_fund
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        def _fetch(ticker_base):
+            try:
+                return ticker_base, scraper_get_fund(ticker_base)
+            except Exception:
+                return ticker_base, {}
+
+        bases = [t["ticker"].split(".")[0].upper() for t in tickers]
+        with ThreadPoolExecutor(max_workers=6) as ex:
+            for base, data in ex.map(_fetch, bases):
+                if data:
+                    live_funds[base] = data
+        print(f"[template/fundamentals] scraper returned {len(live_funds)} stocks")
+    except Exception as e:
+        print(f"[template/fundamentals] scraper unavailable: {e}")
+
+    def fmt_history(arr):
+        return ";".join(str(v) for v in arr) if arr else ""
+
+    def pick(live, sd, field, default=""):
+        """Live scraper wins, then seed, then default (empty = red cell)."""
+        v = live.get(field)
+        if v is not None and v != "" and v != []:
+            return v
+        v = sd.get(field)
+        if v is not None and v != "" and v != []:
+            return v
+        return default
+
     rows = []
     today = datetime.now().strftime("%Y-%m-%d")
     for t in tickers:
         base = t["ticker"].split(".")[0].upper()
-        s = seed.get(base, {})
-
-        def fmt_history(arr):
-            return ";".join(str(v) for v in arr) if arr else ""
+        lv = live_funds.get(base, {})
+        sd = seed.get(base, {})
 
         rows.append({
             "ticker":             base,
-            "eps":                s.get("eps", ""),
-            "bvps":               s.get("bvps", ""),
-            "pe":                 s.get("pe", ""),
-            "pb":                 s.get("pb", ""),
-            "roe":                s.get("roe", ""),
-            "margin":             s.get("margin", ""),
-            "dividends":          s.get("dividends", ""),
-            "dividend_yield":     s.get("dividend_yield", ""),
-            "market_cap":         s.get("market_cap", ""),
-            "total_assets":       s.get("total_assets", ""),
-            "debt_to_equity":     s.get("debt_to_equity", ""),
-            "interest_coverage":  s.get("interest_coverage", ""),
-            "revenue":            s.get("revenue", ""),
-            "net_income":         s.get("net_income", ""),
-            "revenue_history":    fmt_history(s.get("revenue_history", [])),
-            "net_income_history": fmt_history(s.get("net_income_history", [])),
-            "dps_history":        fmt_history(s.get("dps_history", [])),
-            "data_source":        s.get("data_source", ""),
-            "fiscal_year":        s.get("fiscal_year", "2024"),
-            "last_update":        s.get("last_update", today),
+            "eps":                pick(lv, sd, "eps"),
+            "bvps":               pick(lv, sd, "bvps"),
+            "pe":                 pick(lv, sd, "pe"),
+            "pb":                 pick(lv, sd, "pb"),
+            "roe":                pick(lv, sd, "roe"),
+            "margin":             pick(lv, sd, "margin"),
+            "dividends":          pick(lv, sd, "dividends"),
+            "dividend_yield":     pick(lv, sd, "dividend_yield"),
+            "market_cap":         pick(lv, sd, "market_cap"),
+            "total_assets":       pick(lv, sd, "total_assets"),
+            "debt_to_equity":     pick(lv, sd, "debt_to_equity"),
+            "interest_coverage":  pick(lv, sd, "interest_coverage"),
+            "revenue":            pick(lv, sd, "revenue"),
+            "net_income":         pick(lv, sd, "net_income"),
+            "revenue_history":    fmt_history(pick(lv, sd, "revenue_history", [])),
+            "net_income_history": fmt_history(pick(lv, sd, "net_income_history", [])),
+            "dps_history":        fmt_history(pick(lv, sd, "dps_history", [])),
+            "data_source":        pick(lv, sd, "data_source", ""),
+            "fiscal_year":        pick(lv, sd, "fiscal_year", "2024"),
+            "last_update":        pick(lv, sd, "last_update", today),
         })
+
     out = io.StringIO()
     w = csv.DictWriter(out, fieldnames=FUNDAMENTAL_FIELDS)
     w.writeheader()
