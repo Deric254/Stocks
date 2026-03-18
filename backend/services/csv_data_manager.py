@@ -241,7 +241,7 @@ def generate_fundamentals_template(tickers: list, seed: dict) -> str:
 
         bases = [t["ticker"].split(".")[0].upper() for t in tickers]
         with ThreadPoolExecutor(max_workers=6) as ex:
-            for base, data in ex.map(_fetch, bases):
+            for base, data in ex.map(_fetch, bases, timeout=10):
                 if data:
                     live_funds[base] = data
         print(f"[template/fundamentals] scraper returned {len(live_funds)} stocks")

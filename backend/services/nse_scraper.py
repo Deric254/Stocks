@@ -50,6 +50,20 @@ CRITICAL_FIELDS     = ["pe", "eps", "roe"]   # missing these degrades score most
 
 _lock = threading.Lock()
 
+# Load seed fundamentals — fixes NameError crash when live scrape fails
+def _load_seed_fundamentals() -> dict:
+    seed_path = DATA_DIR / "nse_fundamentals_seed.json"
+    try:
+        if seed_path.exists():
+            with open(seed_path) as f:
+                raw = json.load(f)
+            return {k: v for k, v in raw.items() if not k.startswith("_")}
+    except Exception as e:
+        print(f"[NSE] seed load error: {e}")
+    return {}
+
+SEED_FUNDAMENTALS = _load_seed_fundamentals()
+
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
@@ -417,6 +431,39 @@ def _scrape_afx(ticker_base: str) -> dict:
                 p = _safe(val)
                 if p is not None:
                     data["roe"] = p / 100 if abs(p) > 1 else p
+            elif ("net margin" in key or "profit margin" in key or
+                  ("margin" in key and "gross" not in key and "operating" not in key)) and "margin" not in data:
+                p = _safe(val)
+                if p is not None:
+                    data["margin"] = p / 100 if abs(p) > 1 else p
+            elif ("net income" in key or "net profit" in key or "profit after tax" in key or
+                  "pat" == key.strip()) and "net_income" not in data:
+                t = re.sub(r'(?i)([0-9.]+)\s*B$', lambda m: str(float(m.group(1)) * 1e9), val)
+                t = re.sub(r'(?i)([0-9.]+)\s*M$', lambda m: str(float(m.group(1)) * 1e6), t)
+                t = re.sub(r'(?i)([0-9.]+)\s*T$', lambda m: str(float(m.group(1)) * 1e12), t)
+                p = _safe(t.replace(",", ""))
+                if p is not None:
+                    data["net_income"] = p
+            elif ("total assets" in key or ("assets" in key and "net" not in key and "fixed" not in key)) and "total_assets" not in data:
+                t = re.sub(r'(?i)([0-9.]+)\s*B$', lambda m: str(float(m.group(1)) * 1e9), val)
+                t = re.sub(r'(?i)([0-9.]+)\s*M$', lambda m: str(float(m.group(1)) * 1e6), t)
+                t = re.sub(r'(?i)([0-9.]+)\s*T$', lambda m: str(float(m.group(1)) * 1e12), t)
+                p = _safe(t.replace(",", ""))
+                if p and p > 0:
+                    data["total_assets"] = p
+            elif ("debt/equity" in key or "debt to equity" in key or "d/e" == key.strip() or
+                  "gearing" in key or ("debt" in key and "equity" in key)) and "debt_to_equity" not in data:
+                p = _safe(val)
+                if p is not None:
+                    data["debt_to_equity"] = p
+            elif ("interest cover" in key or "interest coverage" in key) and "interest_coverage" not in data:
+                p = _safe(val)
+                if p is not None:
+                    data["interest_coverage"] = p
+            elif ("p/b" in key or "price/book" in key or "price to book" in key) and "pb" not in data:
+                p = _safe(val)
+                if p and p > 0:
+                    data["pb"] = p
             elif "volume" in key and "volume" not in data:
                 t = val.upper().replace("K", "000").replace("M", "000000")
                 p = _safe(t)
@@ -431,6 +478,23 @@ def _scrape_afx(ticker_base: str) -> dict:
             if p and 1 < p < 100000:
                 data["price"] = p
                 break
+
+    # Derive pb if not scraped but price and bvps are available
+    if "pb" not in data and data.get("price") and data.get("bvps") and data["bvps"] > 0:
+        data["pb"] = round(data["price"] / data["bvps"], 2)
+
+    # Derive interest_coverage if not scraped but net_income and revenue available
+    # (non-financial companies only — rough EBIT / estimated interest)
+    if "interest_coverage" not in data and data.get("net_income") and data.get("revenue"):
+        try:
+            ebit = abs(data["net_income"]) * 1.3
+            interest_est = abs(data["revenue"]) * 0.025
+            if interest_est > 0:
+                ic = round(ebit / interest_est, 1)
+                if 0 < ic < 100:
+                    data["interest_coverage"] = ic
+        except Exception:
+            pass
 
     # History tables
     rev_h, ni_h, dps_h = [], [], []
@@ -608,11 +672,11 @@ def get_fundamentals(ticker: str) -> dict:
 
             result = {
                 "ticker": base, "eps": eps, "bvps": bvps, "pe": pe, "pb": pb,
-                "roe": afx.get("roe"), "margin": None, "revenue": None,
+                "roe": afx.get("roe"), "margin": afx.get("margin"), "revenue": afx.get("revenue"),
                 "debt": None, "dividends": dividends, "dividend_yield": div_yield,
-                "market_cap": afx.get("market_cap"), "total_assets": None,
-                "debt_to_equity": None, "interest_coverage": None,
-                "net_income": None, "total_dividends": None,
+                "market_cap": afx.get("market_cap"), "total_assets": afx.get("total_assets"),
+                "debt_to_equity": afx.get("debt_to_equity"), "interest_coverage": afx.get("interest_coverage"),
+                "net_income": afx.get("net_income"), "total_dividends": None,
                 "revenue_history":    afx.get("revenue_history", []),
                 "net_income_history": afx.get("net_income_history", []),
                 "dps_history":        afx.get("dps_history", []),
@@ -659,7 +723,7 @@ def get_fundamentals(ticker: str) -> dict:
             "market_cap":       seed.get("market_cap"),
             "total_assets":     seed.get("total_assets"),
             "debt_to_equity":   seed.get("debt_to_equity"),
-            "interest_coverage":None,
+            "interest_coverage":seed.get("interest_coverage"),
             "total_dividends":  None,
             "revenue_history":    seed.get("revenue_history", []),
             "net_income_history": seed.get("net_income_history", []),
