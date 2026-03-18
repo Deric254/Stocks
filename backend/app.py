@@ -266,7 +266,7 @@ def get_stocks(sector: str = "", sort: str = "score"):
 
     results = []
     with ThreadPoolExecutor(max_workers=8) as ex:
-        futures = list(ex.map(_process_one, tickers))
+        futures = list(ex.map(_process_one, tickers, timeout=20))
     results = [r for r in futures if r is not None]
 
     if sort == "price":

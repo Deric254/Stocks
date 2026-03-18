@@ -3,8 +3,17 @@ import { useState, useEffect, useCallback, useRef } from "react";
 // Works locally (localhost:8000) AND when hosted on Render/Railway
 // To deploy: set VITE_API_URL env variable in your hosting dashboard
 const API = import.meta.env.VITE_API_URL || "http://localhost:8000";
-const get  = (p) => fetch(`${API}${p}`).then(r => { if(!r.ok) throw new Error(r.status); return r.json(); });
-const post = (p,b) => fetch(`${API}${p}`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(b)}).then(r=>{ if(!r.ok) throw new Error(r.status); return r.json(); });
+
+// Fetch with timeout — prevents infinite loading on Render cold start
+function fetchTimeout(url, opts={}, ms=25000){
+  const ctrl = new AbortController();
+  const id = setTimeout(()=>ctrl.abort(), ms);
+  return fetch(url, {...opts, signal: ctrl.signal})
+    .then(r=>{ clearTimeout(id); if(!r.ok) throw new Error(r.status); return r.json(); })
+    .catch(e=>{ clearTimeout(id); throw e; });
+}
+const get  = (p) => fetchTimeout(`${API}${p}`);
+const post = (p,b) => fetchTimeout(`${API}${p}`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(b)});
 
 // ── dericBI colour palette ─────────────────────────────────────────────────
 const C = {
@@ -143,13 +152,23 @@ function TradeBtn({ticker,type,onTrade,small}){
 }
 
 // ── Trade Modal ───────────────────────────────────────────────────────────
-function TradeModal({tickers=[],preselect="",defaultType="BUY",onClose,onSubmit}){
-  const [form,setForm]=useState({ticker:preselect||"",trade_type:defaultType,quantity:"",price:"",date:new Date().toISOString().slice(0,10)});
+function TradeModal({tickers=[],preselect="",defaultType="BUY",onClose,onSubmit,stocks=[]}){
+  const getPrice=(ticker)=>{
+    const t=stocks.find(s=>s.ticker===ticker||s.ticker===ticker.split(".")[0]);
+    return t?.metrics?.price||"";
+  };
+  const initPrice = preselect ? getPrice(preselect) : "";
+  const [form,setForm]=useState({ticker:preselect||"",trade_type:defaultType,quantity:"",price:initPrice,date:new Date().toISOString().slice(0,10)});
   const [search,setSearch]=useState(preselect||"");
   const [showDrop,setShowDrop]=useState(false);
   const set=(k,v)=>setForm(f=>({...f,[k]:v}));
   const filtered=tickers.filter(t=>!search||t.ticker.includes(search.toUpperCase())||t.name.toLowerCase().includes(search.toLowerCase())).slice(0,8);
-  const selectTicker=(t)=>{set("ticker",t.ticker);setSearch(t.ticker+" — "+t.name);setShowDrop(false);};
+  const selectTicker=(t)=>{
+    const autoPrice=getPrice(t.ticker);
+    setForm(f=>({...f,ticker:t.ticker,price:autoPrice}));
+    setSearch(t.ticker+" — "+t.name);
+    setShowDrop(false);
+  };
   const inp={width:"100%",background:"#f9fafb",border:"1px solid "+C.borderGray,borderRadius:8,padding:"10px 13px",color:C.text,fontSize:14,outline:"none",boxSizing:"border-box",fontFamily:"inherit"};
   return(
     <div style={{position:"fixed",inset:0,background:"#00000066",zIndex:1000,display:"flex",alignItems:"center",justifyContent:"center",padding:16}} onClick={onClose}>
@@ -188,8 +207,12 @@ function TradeModal({tickers=[],preselect="",defaultType="BUY",onClose,onSubmit}
           <input type="number" value={form.quantity} onChange={e=>set("quantity",e.target.value)} placeholder="e.g. 500" style={inp}/>
         </div>
         <div style={{marginBottom:13}}>
-          <div style={{fontSize:10,color:C.muted,marginBottom:4,textTransform:"uppercase",letterSpacing:"0.08em",fontWeight:600}}>{form.trade_type==="DIVIDEND"?"Dividend per Share (KES)":"Price per Share (KES)"}</div>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
+            <div style={{fontSize:10,color:C.muted,textTransform:"uppercase",letterSpacing:"0.08em",fontWeight:600}}>{form.trade_type==="DIVIDEND"?"Dividend per Share (KES)":"Price per Share (KES)"}</div>
+            {form.price&&form.ticker&&<div style={{fontSize:10,color:C.green,fontWeight:600}}>↑ auto-filled · editable</div>}
+          </div>
           <input type="number" value={form.price} onChange={e=>set("price",e.target.value)} placeholder="e.g. 45.50" style={inp}/>
+          {form.trade_type!=="DIVIDEND"&&<div style={{fontSize:10,color:C.muted,marginTop:3}}>Price is from the latest data in the system. You can edit if needed.</div>}
         </div>
         {form.quantity&&form.price&&(
           <div style={{background:C.greenLt,border:"1px solid "+C.border,borderRadius:8,padding:"10px 12px",marginBottom:13,fontSize:13,color:C.greenDk,fontWeight:700}}>
@@ -1919,6 +1942,7 @@ export default function App(){
   const [focusTicker,setFocusTicker] = useState(null);
   const [focusField,setFocusField]   = useState(null);
   const [stocks,setStocks]       = useState([]);
+  const [stocksLoading,setStocksLoading] = useState(true);
   const [sectors,setSectors]     = useState([]);
   const [tickers,setTickers]     = useState([]);
   const [portfolio,setPortfolio] = useState({summary:{total_invested:0,current_value:0,unrealized_pl:0,realized_pl:0,return_pct:0,annualized_return:0,dividends_ytd:0,avg_score:null},holdings:[]});
@@ -1941,12 +1965,14 @@ export default function App(){
   },[]);
 
   useEffect(()=>{
+    setStocksLoading(true);
     get("/api/stocks")
       .then(d=>{
         if(d.stocks?.length){setStocks(d.stocks);setLive(true);setOffline(false);}
         else{setStocks([]);setLive(false);}
       })
-      .catch(()=>{setLive(false);setOffline(true);showToast("Cannot reach backend — check CMD window","error");});
+      .catch(()=>{setLive(false);setOffline(true);showToast("Cannot reach backend — check CMD window","error");})
+      .finally(()=>setStocksLoading(false));
   },[]);
 
   useEffect(()=>{
@@ -2154,14 +2180,26 @@ export default function App(){
         {/* Page content */}
         <div className="main-padding" style={{flex:1,padding:"24px 28px",overflowY:"auto",background:C.bg}}>
           {offline&&<OfflineBanner/>}
-          {page==="dashboard" && <Dashboard  stocks={stocks} portfolio={portfolio} onSelect={openStock} onTrade={openTrade}/>}
-          {page==="screener"  && <Screener   stocks={stocks} sectors={sectors}     onSelect={openStock} onTrade={openTrade}/>}
-          {page==="watchlist" && <Watchlist  stocks={stocks} watchlist={watchlist}  onSelect={openStock} onTrade={openTrade}/>}
-          {page==="portfolio" && <Portfolio  portfolio={portfolio} onAdd={()=>setModal({ticker:"",type:"BUY"})} onTrade={openTrade} stocks={stocks}/>}
-          {page==="analytics" && <Analytics  analytics={analytics} stocks={stocks}/>}
-          {page==="detail"&&selected && <StockDetail ticker={selected} onBack={()=>setPage("screener")} onTrade={openTrade} tickers={tickers} onToast={showToast}/>}
-          {page==="gold"      && <GoldTrading onToast={showToast}/>}
-          {page==="freshness" && <DataFreshness onToast={showToast} focusTicker={focusTicker} focusField={focusField}/>}
+          {stocksLoading && (page==="dashboard"||page==="screener"||page==="watchlist") ? (
+            <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:80,gap:20}}>
+              <div style={{width:48,height:48,border:"4px solid "+C.greenLt,borderTopColor:C.green,borderRadius:"50%",animation:"spin 0.8s linear infinite"}}/>
+              <div style={{textAlign:"center"}}>
+                <div style={{fontSize:15,fontWeight:700,color:C.text,marginBottom:6}}>Loading NSE stocks…</div>
+                <div style={{fontSize:12,color:C.muted,maxWidth:280}}>Fetching all 55 tickers. This takes 10–30 seconds on first load.</div>
+              </div>
+            </div>
+          ) : (
+            <>
+              {page==="dashboard" && <Dashboard  stocks={stocks} portfolio={portfolio} onSelect={openStock} onTrade={openTrade}/>}
+              {page==="screener"  && <Screener   stocks={stocks} sectors={sectors}     onSelect={openStock} onTrade={openTrade}/>}
+              {page==="watchlist" && <Watchlist  stocks={stocks} watchlist={watchlist}  onSelect={openStock} onTrade={openTrade}/>}
+              {page==="portfolio" && <Portfolio  portfolio={portfolio} onAdd={()=>setModal({ticker:"",type:"BUY"})} onTrade={openTrade} stocks={stocks}/>}
+              {page==="analytics" && <Analytics  analytics={analytics} stocks={stocks}/>}
+              {page==="detail"&&selected && <StockDetail ticker={selected} onBack={()=>setPage("screener")} onTrade={openTrade} tickers={tickers} onToast={showToast}/>}
+              {page==="gold"      && <GoldTrading onToast={showToast}/>}
+              {page==="freshness" && <DataFreshness onToast={showToast} focusTicker={focusTicker} focusField={focusField}/>}
+            </>
+          )}
         </div>
 
         {/* Footer */}
@@ -2183,6 +2221,7 @@ export default function App(){
           defaultType={modal.type||"BUY"}
           onClose={()=>setModal(null)}
           onSubmit={handleTrade}
+          stocks={stocks}
         />
       )}
       {toast&&<Toast msg={toast.msg} type={toast.type} onClose={()=>setToast(null)}/>}
