@@ -11,6 +11,10 @@ services:
         value: production
       - key: PYTHON_VERSION
         value: 3.11.0
+      - key: ALLOWED_ORIGINS
+        value: https://stockintel-frontend.onrender.com  # UPDATE to your actual frontend URL after it deploys — required, or the frontend will be blocked by CORS
+      - key: FRED_API_KEY
+        value: ""  # Optional — get a free key at fred.stlouisfed.org/docs/api/api_key.html to enable Layer 1 global macro indicators (rates/inflation/GDP/PMI). Leave blank to skip; the app runs fine without it.
 
   # Frontend on Render (static site)
   - type: web

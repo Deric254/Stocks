@@ -6,10 +6,14 @@ Manual CSV data uploads. No scraping. No external APIs.
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, UploadFile, File, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from typing import Optional
-import uvicorn, math, threading, os, time
-from datetime import datetime
+import uvicorn, math, threading, os, time, sys
+import pandas as pd
+from pathlib import Path
+from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
 
 from services.data_loader import DataLoader
@@ -17,8 +21,50 @@ from services.scoring import ScoringEngine
 from services.portfolio import PortfolioManager
 from services.analytics import AnalyticsEngine
 from services.csv_data_manager import get_manager, generate_price_template, generate_fundamentals_template
+from services.technical import compute_technical
+from services.valuation import compute_valuation
+from services.risk import compute_portfolio_risk
+from services.macro import compute_global_intelligence
+from services.country import compute_country_intelligence
+from services.sector import compute_sector_industry_intelligence
+from services.capital_flow import compute_capital_flow
+from services.recommendation import synthesize_recommendation, compute_adaptive_weights
+from services.continuous_learning import (
+    log_recommendation, record_outcome, get_recommendation_history, get_accuracy_stats,
+    get_component_effectiveness,
+)
 
 # ── Keep-alive: robust external ping via UptimeRobot or self-ping ──────────
+def _app_base_path() -> Path:
+    """
+    Resolves the correct base directory whether running as normal
+    Python (dev mode) or as a PyInstaller-frozen single-file
+    executable (sys._MEIPASS points at the temp extraction dir).
+    Needed so VERSION and the bundled frontend/static files are found
+    correctly in both cases without maintaining two code paths.
+    """
+    if getattr(sys, "frozen", False):
+        return Path(sys._MEIPASS)
+    return Path(__file__).parent.parent
+
+
+def _read_version() -> str:
+    """Single source of truth: the VERSION file at repo root, bumped
+    automatically by the release workflow. Falls back to 'dev' if
+    running from source without that file (e.g. a fresh git clone
+    before any release has happened)."""
+    try:
+        version_file = _app_base_path() / "VERSION"
+        if version_file.exists():
+            return version_file.read_text().strip()
+    except Exception:
+        pass
+    return "dev"
+
+
+APP_VERSION = _read_version()
+
+
 def _start_keep_alive():
     """
     Two-layer keep-alive for Render free tier:
@@ -47,6 +93,42 @@ def _start_keep_alive():
     threading.Thread(target=_loop, daemon=True).start()
 
 
+def _run_daily_price_snapshot():
+    """
+    Runs the real-price-history-accumulation job (see
+    CSVDataManager.snapshot_daily_prices for the ACID guarantees).
+    Deliberately called in a background thread from startup, never
+    on the request path — a scraper call across 55 tickers can take
+    a few seconds, and the app must be responsive immediately, not
+    after that finishes. Failure here is non-fatal: if the scraper
+    is unreachable (e.g. no internet in this environment), the app
+    keeps running normally on whatever history already exists.
+    """
+    try:
+        from services.nse_scraper import get_all_prices
+        live_prices = get_all_prices()  # internally cached ~4h — cheap to call often
+        if not live_prices:
+            print("[snapshot] scraper returned no prices — skipping (app continues normally)")
+            return
+        result = get_manager().snapshot_daily_prices(live_prices)
+        print(f"[snapshot] {result['date']}: added {result['total_added']} tickers "
+              f"({len(result['skipped_duplicate'])} already had today, "
+              f"{len(result['skipped_no_price'])} had no valid price)")
+    except Exception as e:
+        print(f"[snapshot] failed (non-fatal, app continues normally): {e}")
+
+
+def _start_daily_snapshot_thread():
+    """Runs once immediately at startup, then once every 24h — not
+    request-triggered, so it never adds latency to anything a user
+    is waiting on."""
+    def _loop():
+        while True:
+            _run_daily_price_snapshot()
+            time.sleep(24 * 3600)
+    threading.Thread(target=_loop, daemon=True).start()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup: load local data (fast — no network calls)
@@ -57,14 +139,28 @@ async def lifespan(app: FastAPI):
     fund_count  = meta.get("fundamentals_ticker_count", 0)
     print(f"[startup] Loaded: {price_count} prices, {fund_count} fundamentals from CSV")
     _start_keep_alive()
+    _start_daily_snapshot_thread()
     print("[startup] Ready.")
     yield
 
-app = FastAPI(title="Stock Intel API", version="5.0.0", lifespan=lifespan)
+app = FastAPI(title="Stock Intel API", version=APP_VERSION, lifespan=lifespan)
+
+# CORS: wildcard origin + allow_credentials=True is invalid per the CORS spec
+# (browsers reject it for credentialed requests) and an unnecessarily open
+# security posture regardless. Configure via ALLOWED_ORIGINS env var
+# (comma-separated) for production; defaults to common local dev ports.
+_allowed_origins_env = os.environ.get("ALLOWED_ORIGINS", "").strip()
+if _allowed_origins_env:
+    _allowed_origins = [o.strip() for o in _allowed_origins_env.split(",") if o.strip()]
+else:
+    _allowed_origins = [
+        "http://localhost:5173", "http://127.0.0.1:5173",  # vite dev
+        "http://localhost:3000", "http://127.0.0.1:3000",
+    ]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -202,10 +298,174 @@ class ManualFundamentalRequest(BaseModel):
 def root():
     return {"message": "Stock Intel API v5", "status": "running", "mode": "manual_csv"}
 
+@app.get("/api/version")
+def get_version():
+    """
+    Current running version — bumped automatically by the GitHub
+    Actions release workflow (VERSION file at repo root). Client
+    systems should call this first, then /api/version/check to see
+    if a newer release is available.
+    """
+    return {"version": APP_VERSION, "frozen": getattr(sys, "frozen", False)}
+
+
+# GITHUB_REPO must match "owner/repo" exactly for the update-check to
+# work — set via env var so this code never needs a hardcoded fork.
+_GITHUB_REPO = os.environ.get("GITHUB_REPO", "").strip()
+
+
+@app.get("/api/version/check")
+def check_for_update():
+    """
+    Checks GitHub's release API for a newer version than what's
+    currently running. This is the endpoint other client systems
+    should poll (e.g. daily) to implement auto-update: if
+    update_available is true, download_url points directly at the
+    matching-platform executable attached to that release.
+
+    Deliberately uses GitHub's own /releases/latest endpoint rather
+    than a custom version server — it's free, already reliable, and
+    one less thing this project has to host and keep alive.
+    """
+    if not _GITHUB_REPO:
+        return {
+            "current_version": APP_VERSION,
+            "update_available": None,
+            "detail": "GITHUB_REPO env var not set on this server — cannot check for updates. "
+                      "Set it to 'owner/repo' to enable this endpoint.",
+        }
+    try:
+        import requests
+        resp = requests.get(
+            f"https://api.github.com/repos/{_GITHUB_REPO}/releases/latest",
+            timeout=8, headers={"Accept": "application/vnd.github+json"},
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        latest_tag = data.get("tag_name", "").lstrip("v")
+        assets = [
+            {"name": a["name"], "download_url": a["browser_download_url"], "size_bytes": a["size"]}
+            for a in data.get("assets", [])
+        ]
+
+        def _parse(v):
+            try:
+                return tuple(int(p) for p in v.split("."))
+            except Exception:
+                return (0, 0, 0)
+
+        update_available = _parse(latest_tag) > _parse(APP_VERSION) if latest_tag else False
+
+        return {
+            "current_version": APP_VERSION,
+            "latest_version": latest_tag or None,
+            "update_available": update_available,
+            "release_notes_url": data.get("html_url"),
+            "assets": assets,
+        }
+    except Exception as e:
+        return {
+            "current_version": APP_VERSION,
+            "update_available": None,
+            "detail": f"Could not reach GitHub to check for updates: {e}",
+        }
+
+
 @app.get("/api/ping")
 def ping():
     """Lightweight endpoint for UptimeRobot / self-ping keep-alive."""
     return {"ok": True, "ts": datetime.now().isoformat()}
+
+
+@app.get("/api/system-status")
+def system_status():
+    """
+    Real operational status per subsystem — not a pulse check. Reports
+    what's actually configured and reachable so a deploy can be
+    verified in one call instead of clicking through every page.
+    Intended for production monitoring / post-deploy smoke checks.
+    """
+    status = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "core": {"status": "ok", "detail": "NSE ticker universe and local CSV data loaded"},
+    }
+
+    # Local data layer — always should work, no network dependency
+    try:
+        meta = get_manager().get_upload_meta()
+        status["local_data"] = {
+            "status": "ok" if meta.get("prices_ticker_count", 0) > 0 else "degraded",
+            "prices_ticker_count": meta.get("prices_ticker_count", 0),
+            "fundamentals_ticker_count": meta.get("fundamentals_ticker_count", 0),
+            "detail": "OK" if meta.get("prices_ticker_count", 0) > 0 else "No price data uploaded yet — screener/scoring will run on seed data only",
+        }
+    except Exception as e:
+        status["local_data"] = {"status": "error", "detail": str(e)}
+
+    # Daily price snapshot job — the mechanism that accumulates real
+    # NSE price history over time (no free historical source exists;
+    # see CSVDataManager.snapshot_daily_prices). Runs in the
+    # background at startup and every 24h; this reports whether it's
+    # actually been landing rows, not just whether it exists.
+    try:
+        snap_meta = get_manager().get_upload_meta()
+        last_snapshot = snap_meta.get("last_auto_snapshot")
+        last_count = snap_meta.get("last_auto_snapshot_count", 0)
+        status["daily_price_snapshot"] = {
+            "status": "ok" if last_snapshot else "pending",
+            "last_run": last_snapshot,
+            "tickers_added_last_run": last_count,
+            "detail": (
+                f"Last ran {last_snapshot}, added {last_count} tickers' prices to history"
+                if last_snapshot else
+                "Has not run yet — runs automatically within seconds of startup, then every 24h. "
+                "Technical/Capital Flow layers will start populating once ~14+ days of history accumulate."
+            ),
+        }
+    except Exception as e:
+        status["daily_price_snapshot"] = {"status": "error", "detail": str(e)}
+
+    # Layer 1 — Global (FRED requires a key; stooq doesn't)
+    fred_key_set = bool(os.environ.get("FRED_API_KEY", "").strip())
+    status["layer_1_global"] = {
+        "status": "ok" if fred_key_set else "partial",
+        "fred_configured": fred_key_set,
+        "detail": "FRED + stooq both configured" if fred_key_set else
+                   "FRED_API_KEY not set — global rates/inflation/GDP/PMI unavailable; stooq (VIX/gold/oil/etc.) still works",
+    }
+
+    # Layer 2 — Country (World Bank, keyless — always "configured", live-reachability unknown until called)
+    status["layer_2_country"] = {"status": "ok", "detail": "World Bank API — keyless, no configuration needed"}
+
+    # Layer 3/4 — Sector (stooq, keyless)
+    status["layer_3_4_sector"] = {"status": "ok", "detail": "stooq sector ETFs — keyless, no configuration needed"}
+
+    # Layer 12 — Continuous learning data volume
+    try:
+        hist = get_recommendation_history()
+        evaluated = [h for h in hist if h.get("outcome_return_pct") not in (None, "")]
+        status["layer_12_continuous_learning"] = {
+            "status": "ok",
+            "total_logged": len(hist),
+            "total_evaluated": len(evaluated),
+            "detail": "Adaptive weighting active" if len(evaluated) >= 20 else
+                       f"Using static weights — {len(evaluated)}/20 minimum evaluated recommendations for adaptive weighting",
+        }
+    except Exception as e:
+        status["layer_12_continuous_learning"] = {"status": "error", "detail": str(e)}
+
+    # CORS configuration sanity check — flag if still on permissive defaults in what looks like production
+    is_render = bool(os.environ.get("RENDER", "") or os.environ.get("PORT", "") not in ("", "8000"))
+    status["security"] = {
+        "status": "ok" if _allowed_origins_env else ("warning" if is_render else "ok"),
+        "allowed_origins_configured": bool(_allowed_origins_env),
+        "detail": "ALLOWED_ORIGINS explicitly set" if _allowed_origins_env else
+                   "ALLOWED_ORIGINS not set — using local-dev-only defaults. Set this env var on your deployed backend or the hosted frontend will be blocked by CORS.",
+    }
+
+    overall_ok = all(s.get("status") in ("ok", "partial") for k, s in status.items() if isinstance(s, dict) and "status" in s)
+    status["overall"] = "operational" if overall_ok else "degraded"
+    return status
 
 
 # ── Tickers & Sectors ──────────────────────────────────────────────────────
@@ -283,6 +543,64 @@ def get_stocks(sector: str = "", sort: str = "score"):
     return {"stocks": results, "count": len(results)}
 
 
+@app.get("/api/stock/{ticker}/recommendation")
+def get_stock_recommendation(ticker: str):
+    """Layer 10 — AI Recommendation Engine. Synthesizes company score
+    (Layer 5), valuation (Layer 6), technical (Layer 8), capital flow
+    (Layer 7), and NSE sector momentum (Layer 3/4) into one transparent,
+    reproducible recommendation with an explainable thesis."""
+    ticker = ticker.upper()
+    if "." not in ticker:
+        ticker += ".NR"
+    try:
+        meta = next((t for t in NSE_TICKERS if t["ticker"] == ticker.split(".")[0]), None)
+        if not meta:
+            raise HTTPException(status_code=404, detail=f"Unknown ticker {ticker}")
+
+        prices = loader.get_price_data(ticker)
+        fundamentals = loader.get_fundamentals(ticker)
+        scores = scorer.compute_scores(prices, fundamentals)
+
+        fund_with_price = dict(fundamentals)
+        if prices is not None and not prices.empty:
+            fund_with_price["price"] = float(prices["close"].iloc[-1])
+        valuation = compute_valuation(fund_with_price)
+        technical = compute_technical(prices)
+        capital_flow = compute_capital_flow(prices)
+
+        sector_intel = compute_sector_industry_intelligence(NSE_TICKERS, loader)
+        nse_sector_data = sector_intel.get("nse_sectors")
+
+        current_price = fund_with_price.get("price")
+
+        # Layer 12 feedback loop: use real historical performance to
+        # adjust component weights, gated by sample size so it can't
+        # overfit on thin data. Falls back to static weights until
+        # enough evaluated recommendations exist.
+        effectiveness = get_component_effectiveness()
+        adaptive = compute_adaptive_weights(effectiveness)
+
+        rec = synthesize_recommendation(
+            ticker=ticker, name=meta["name"], sector_name=meta["sector"],
+            company_scores=scores, valuation=valuation, technical=technical,
+            capital_flow=capital_flow, nse_sector_data=nse_sector_data,
+            current_price=current_price, weights=adaptive["weights"],
+        )
+        if rec.get("available"):
+            rec["weight_adaptation"] = {
+                "adaptive": adaptive["adaptive"],
+                "reason": adaptive["reason"],
+                "adjustments_applied": adaptive.get("adjustments_applied", {}),
+            }
+        return rec
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+
+
 @app.get("/api/stock/{ticker_raw:path}")
 def get_stock(ticker_raw: str):
     try:
@@ -318,8 +636,30 @@ def get_stock(ticker_raw: str):
         rev_history = fundamentals.get("revenue_history", [])
         ni_history  = fundamentals.get("net_income_history", [])
         dps_history = fundamentals.get("dps_history", [])
-        current_year = 2024
+        current_year = datetime.now().year
         years = list(range(current_year - len(rev_history) + 1, current_year + 1)) if rev_history else []
+
+        # Layer 8 — Technical Intelligence (pure computation on price history)
+        try:
+            technical = compute_technical(prices)
+        except Exception as e:
+            technical = {"available": False, "reason": f"technical calc error: {e}"}
+
+        # Layer 6 ext — DCF / DDM / margin of safety (needs current price injected,
+        # same pattern scoring.py already uses)
+        try:
+            fund_with_price = dict(fundamentals)
+            if not prices.empty:
+                fund_with_price["price"] = float(prices["close"].iloc[-1])
+            valuation = compute_valuation(fund_with_price)
+        except Exception as e:
+            valuation = {"error": f"valuation calc error: {e}"}
+
+        # Layer 7 — Capital Flow Engine (volume-based accumulation/distribution)
+        try:
+            capital_flow = compute_capital_flow(prices)
+        except Exception as e:
+            capital_flow = {"available": False, "reason": f"capital flow calc error: {e}"}
 
         return {
             "ticker":        ticker,
@@ -352,6 +692,9 @@ def get_stock(ticker_raw: str):
             "my_position":   position,
             "in_watchlist":  ticker in watchlist,
             "missing_fields": missing,
+            "technical":     technical,
+            "valuation":     valuation,
+            "capital_flow":  capital_flow,
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -606,10 +949,208 @@ def _enrich(summary: dict) -> dict:
     }
 
 
+def _build_benchmark_basket() -> list:
+    """
+    Equal-weighted basket of all tracked NSE tickers as a market proxy
+    for beta calculations (Layer 9). No free, reliable NASI index feed
+    is wired up yet — this is an explicit, declared approximation, not
+    a substitute for real index data (see risk.py docstring).
+    Returns a chronological list of basket index values (base = 100).
+    """
+    series_list = []
+    for t in NSE_TICKERS:
+        try:
+            df = loader.get_price_data(t["ticker"])
+            if df is not None and not df.empty and len(df) >= 10:
+                s = df["close"].astype(float)
+                s.index = pd.to_datetime(s.index).normalize()
+                series_list.append(s / s.iloc[0] * 100)  # normalize to common base
+        except Exception:
+            continue
+
+    if len(series_list) < 2:
+        return []
+
+    combined = pd.concat(series_list, axis=1).sort_index().ffill()
+    basket = combined.mean(axis=1, skipna=True).dropna()
+    return basket.tolist()
+
+
 @app.get("/api/portfolio")
 def get_portfolio():
     try:
         return _enrich(portfolio.get_summary(loader))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── Layers 1-4: Global / Country / Sector / Industry Intelligence ───────
+# Cached at module level (separate from the per-function caches inside
+# macro.py/country.py/sector.py) so concurrent requests during a burst
+# don't each trigger their own external fetch storm.
+_layer1234_cache = {"global": None, "global_ts": 0, "country": None, "country_ts": 0,
+                     "sector": None, "sector_ts": 0}
+_LAYER_CACHE_TTL = 1800  # 30 min
+
+
+@app.get("/api/intelligence/global")
+def get_global_layer():
+    """Layer 1 — Global Intelligence Engine (FRED + stooq)."""
+    now = time.time()
+    if _layer1234_cache["global"] and (now - _layer1234_cache["global_ts"]) < _LAYER_CACHE_TTL:
+        return _layer1234_cache["global"]
+    try:
+        result = compute_global_intelligence()
+        _layer1234_cache["global"] = result
+        _layer1234_cache["global_ts"] = now
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/intelligence/country")
+def get_country_layer(countries: str = None):
+    """Layer 2 — Country Intelligence Engine (World Bank).
+    Optional ?countries=KEN,USA,GBR to override the default tracked list."""
+    codes = [c.strip().upper() for c in countries.split(",")] if countries else None
+    cache_key = countries or "default"
+    now = time.time()
+    cached = _layer1234_cache.get("country")
+    if cached and cached.get("_cache_key") == cache_key and (now - _layer1234_cache["country_ts"]) < _LAYER_CACHE_TTL:
+        return cached
+    try:
+        result = compute_country_intelligence(codes)
+        result["_cache_key"] = cache_key
+        _layer1234_cache["country"] = result
+        _layer1234_cache["country_ts"] = now
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/intelligence/sector")
+def get_sector_layer():
+    """Layers 3+4 — Sector + Industry Intelligence (global ETF rotation
+    via stooq, plus NSE-local sector momentum from your own price data)."""
+    now = time.time()
+    if _layer1234_cache["sector"] and (now - _layer1234_cache["sector_ts"]) < _LAYER_CACHE_TTL:
+        return _layer1234_cache["sector"]
+    try:
+        result = compute_sector_industry_intelligence(NSE_TICKERS, loader)
+        _layer1234_cache["sector"] = result
+        _layer1234_cache["sector_ts"] = now
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/portfolio/risk")
+def get_portfolio_risk():
+    """Layer 9 (Risk) + Layer 11 (Portfolio Intelligence):
+    Sharpe, Sortino, max drawdown, beta, correlation matrix,
+    diversification (HHI), and portfolio health score."""
+    try:
+        equity_curve = analytics.get_equity_curve(portfolio, loader)
+
+        holdings = portfolio.get_summary(loader).get("holdings", [])
+        price_series_by_ticker = {}
+        for h in holdings:
+            ticker = h["ticker"]
+            try:
+                df = loader.get_price_data(ticker)
+                if df is not None and not df.empty:
+                    s = df["close"].astype(float)
+                    s.index = pd.to_datetime(s.index).normalize()
+                    price_series_by_ticker[ticker] = s
+            except Exception:
+                price_series_by_ticker[ticker] = None
+
+        benchmark_values = _build_benchmark_basket()
+        sector_by_ticker = {t["ticker"]: t["sector"] for t in NSE_TICKERS}
+
+        risk = compute_portfolio_risk(
+            equity_curve=equity_curve,
+            price_series_by_ticker=price_series_by_ticker,
+            benchmark_values=benchmark_values,
+            holdings=holdings,
+            sector_by_ticker=sector_by_ticker,
+        )
+        return risk
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/recommendations/log")
+def log_recommendation_endpoint(ticker: str):
+    """Layer 12 — snapshot a Layer 10 recommendation for future outcome tracking."""
+    try:
+        rec = get_stock_recommendation(ticker)
+        if not rec.get("available"):
+            raise HTTPException(status_code=400, detail="No recommendation available to log")
+        rec_id = log_recommendation(ticker, {
+            "company_score": rec["component_scores"].get("company"),
+            "valuation_score": rec["component_scores"].get("valuation"),
+            "technical_score": rec["component_scores"].get("technical"),
+            "capital_flow_score": rec["component_scores"].get("capital_flow"),
+            "sector_score": rec["component_scores"].get("sector"),
+            "risk_classification": None,
+            "overall_recommendation": rec["recommendation"],
+            "confidence": rec["confidence"],
+            "price_at_recommendation": rec.get("current_price"),
+            "thesis_summary": rec["thesis"]["summary"],
+        })
+        return {"success": True, "recommendation_id": rec_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/recommendations/{recommendation_id}/outcome")
+def record_recommendation_outcome(recommendation_id: str, current_price: float):
+    """Layer 12 — backfill the actual outcome for a past logged recommendation."""
+    try:
+        result = record_outcome(recommendation_id, current_price)
+        if not result.get("success"):
+            raise HTTPException(status_code=404, detail=result.get("reason"))
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/recommendations/history")
+def get_recommendations_history(ticker: str = None):
+    """Layer 12 — recommendation log, optionally filtered by ticker."""
+    try:
+        return {"history": get_recommendation_history(ticker)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/recommendations/accuracy")
+def get_recommendations_accuracy():
+    """Layer 12 — aggregate accuracy stats across all recommendations
+    with recorded outcomes. Empty/low-confidence until months of
+    history accumulate — this is expected, not a bug."""
+    try:
+        return get_accuracy_stats()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/recommendations/effectiveness")
+def get_recommendations_effectiveness():
+    """Layer 12 — the actual feedback loop. Shows how strongly each
+    Layer 10 component (company, valuation, technical, capital flow,
+    sector) has historically correlated with real outcomes, and
+    whether there's enough evaluated history to trust that correlation.
+    This is what /api/stock/{ticker}/recommendation's weight_adaptation
+    field is built from — inspect this if a recommendation's weights
+    look unexpected."""
+    try:
+        return get_component_effectiveness()
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -664,138 +1205,46 @@ def remove_watchlist(req: WatchlistRequest):
     return {"watchlist": wl}
 
 
-# ══════════════════════════════════════════════════════════════════════════
-# GOLD MODULE — unchanged
-# ══════════════════════════════════════════════════════════════════════════
+# ── Bundled frontend (only present in the packaged executable) ──────────
+# Mounted LAST, deliberately — StaticFiles' catch-all must never be able
+# to shadow an /api/* route. In normal local dev (npm run dev on its own
+# port) this directory won't exist and the mount is silently skipped;
+# only the PyInstaller build ships frontend/dist alongside the exe.
+_static_dir = _app_base_path() / "frontend" / "dist"
+if _static_dir.exists():
+    app.mount("/assets", StaticFiles(directory=str(_static_dir / "assets")), name="assets")
 
-from services.gold import (
-    fetch_live_price, fetch_ohlcv, generate_signal,
-    run_backtest, demo_manager, compute_indicators,
-    support_resistance, fibonacci_levels
-)
-
-class DemoTradeRequest(BaseModel):
-    direction: str
-    entry: float
-    sl: float
-    tp1: float
-    tp2: float
-    score: int
-    lot_size: float = 0.1
-
-class CloseTradeRequest(BaseModel):
-    trade_id: int
-    close_price: float
-    result: str
-
-class BacktestRequest(BaseModel):
-    interval: str = "1h"
-    start_date: Optional[str] = None
-    end_date: Optional[str] = None
-    atr_sl_mult: float = 1.5
-    atr_tp_mult: float = 4.5
-    min_score: int = 35
-
-
-@app.get("/api/gold/price")
-def gold_price():
-    try:
-        return fetch_live_price()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/api/gold/candles")
-def gold_candles(interval: str = "1h", outputsize: int = 300):
-    try:
-        df = fetch_ohlcv(interval=interval, outputsize=outputsize)
-        if df.empty:
-            return {"candles": [], "interval": interval}
-        df = compute_indicators(df)
-        records = []
-        for dt, row in df.iterrows():
-            records.append({
-                "datetime": str(dt),
-                "open":   round(_clean(row["open"]) or 0, 2),
-                "high":   round(_clean(row["high"]) or 0, 2),
-                "low":    round(_clean(row["low"])  or 0, 2),
-                "close":  round(_clean(row["close"]) or 0, 2),
-                "volume": round(_clean(row.get("volume", 0)) or 0, 2),
-                "ema9":   round(_clean(row.get("ema9"))  or 0, 2),
-                "ema21":  round(_clean(row.get("ema21")) or 0, 2),
-                "ema50":  round(_clean(row.get("ema50")) or 0, 2),
-                "ema200": round(_clean(row.get("ema200")) or 0, 2),
-                "rsi":    round(_clean(row.get("rsi14")) or 0, 1),
-                "macd_hist": round(_clean(row.get("macd_hist")) or 0, 4),
-                "atr":    round(_clean(row.get("atr14")) or 0, 2),
-            })
-        return {"candles": records, "interval": interval, "count": len(records)}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/api/gold/signal")
-def gold_signal():
-    try:
-        df_h4  = fetch_ohlcv(interval="4h",    outputsize=500)
-        df_h1  = fetch_ohlcv(interval="1h",    outputsize=300)
-        df_m30 = fetch_ohlcv(interval="30min", outputsize=200)
-        signal = generate_signal(df_h4, df_h1, df_m30)
-        return signal
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/api/gold/backtest")
-def gold_backtest(req: BacktestRequest):
-    try:
-        df = fetch_ohlcv(interval=req.interval, outputsize=1000)
-        if df.empty:
-            raise HTTPException(status_code=400, detail="No price data available for backtest")
-        result = run_backtest(df, start_date=req.start_date, end_date=req.end_date,
-                              atr_sl_mult=req.atr_sl_mult, atr_tp_mult=req.atr_tp_mult,
-                              min_score=req.min_score)
-        return result
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/api/gold/demo/trades")
-def get_demo_trades():
-    try:
-        return {"trades": demo_manager.get_trades(), "performance": demo_manager.get_performance()}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/api/gold/demo/open")
-def open_demo_trade(req: DemoTradeRequest):
-    try:
-        trade = demo_manager.open_trade(
-            direction=req.direction, entry=req.entry,
-            sl=req.sl, tp1=req.tp1, tp2=req.tp2,
-            score=req.score, lot_size=req.lot_size)
-        return {"trade": trade, "performance": demo_manager.get_performance()}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/api/gold/demo/close")
-def close_demo_trade(req: CloseTradeRequest):
-    try:
-        trades = demo_manager.close_trade(req.trade_id, req.close_price, req.result)
-        return {"trades": trades, "performance": demo_manager.get_performance()}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/api/gold/sr-fib")
-def gold_sr_fib():
-    try:
-        df = fetch_ohlcv(interval="4h", outputsize=300)
-        if df.empty:
-            return {"sr": {}, "fib": {}}
-        sr  = support_resistance(df, lookback=100)
-        fib = fibonacci_levels(df, lookback=200)
-        return {"sr": sr, "fib": fib}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    @app.get("/{full_path:path}")
+    def serve_frontend(full_path: str):
+        """Single-page-app fallback: any non-API, non-asset path
+        serves index.html so React Router-style client-side routing
+        works even on a hard refresh of a deep link.
+        Deliberately excludes /api/* — an unmatched API path must
+        still 404 normally, never silently fall through to HTML.
+        Without this check, a typo'd or removed API route would
+        return 200 + index.html instead of a real 404, masking
+        errors from any client integration checking status codes."""
+        if full_path.startswith("api/"):
+            raise HTTPException(status_code=404, detail=f"Not found: /{full_path}")
+        requested = _static_dir / full_path
+        if full_path and requested.exists() and requested.is_file():
+            return FileResponse(requested)
+        return FileResponse(_static_dir / "index.html")
 
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
-    reload = os.environ.get("ENVIRONMENT", "development") == "development"
-    uvicorn.run("app:app", host="0.0.0.0", port=port, reload=reload)
+    is_frozen = getattr(sys, "frozen", False)
+    # Reload mode re-imports the app by module string ("app:app"),
+    # which works from source but breaks inside a PyInstaller-frozen
+    # executable — there's no "app.py" file on disk to re-import, only
+    # the bundled archive. Auto-reload only makes sense in dev anyway,
+    # so it's forced off whenever running as a packaged executable,
+    # and the app object is passed directly (not by string) in that
+    # case to avoid the same import-by-string failure mode entirely.
+    reload = (not is_frozen) and os.environ.get("ENVIRONMENT", "development") == "development"
+    if is_frozen:
+        print(f"[stockintel] Running as packaged executable v{APP_VERSION} — http://localhost:{port}")
+        uvicorn.run(app, host="0.0.0.0", port=port, reload=False)
+    else:
+        uvicorn.run("app:app", host="0.0.0.0", port=port, reload=reload)

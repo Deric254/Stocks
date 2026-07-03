@@ -1,6 +1,6 @@
 # 📈 Stock Intel — NSE Kenya Intelligence Platform
 
-Smart stock analysis + Gold trading signals for the Nairobi Securities Exchange.
+Smart stock analysis for the Nairobi Securities Exchange.
 
 ---
 
@@ -65,17 +65,49 @@ Open: **http://localhost:5173**
 ### ⚠️ Important Notes for Hosted Version
 - **First load takes 30-60 seconds** — Render free tier sleeps after 15 min inactivity. It wakes up when someone visits.
 - **Prices may show as stubs** — NSE scraping works best locally. On hosted version, use the **Data Status** page to manually enter current prices.
-- **Gold API** — Make sure `TWELVE_KEY` in `backend/services/gold.py` has your real Twelve Data API key.
 
----
+### 🛠️ Troubleshooting
 
-## 🔑 API Keys (Optional but Recommended)
+**"Failed to build wheel" / cargo / rustc errors during `pip install`:** You're on Python 3.14 or newer. It was released very recently and several required libraries (`pydantic-core`, sometimes `pandas`/`numpy`) don't have prebuilt installer packages ("wheels") for it yet, so `pip` tries to compile them from source — which needs a Rust compiler most machines don't have, and fails with a long, confusing error. **Fix:** install Python 3.11 or 3.12 from python.org (you can have multiple versions installed side by side — this won't remove your existing Python), check "Add python.exe to PATH" during install, then re-run `START.bat`. It checks your Python version automatically now and will tell you clearly if this is the issue, before ever reaching `pip`.
 
-### Twelve Data (Gold live prices)
-1. Go to **twelvedata.com** → Free signup
-2. Get your API key (800 requests/day free)
-3. Open `backend/services/gold.py`
-4. Replace: `TWELVE_KEY = "demo"` with your key
+**Screen looks frozen at "Checking backend dependencies...":** It's usually not frozen — `pip` downloading pandas/numpy for the first time can take 1-3 minutes with the terminal looking idle. Wait it out; if it's genuinely stuck past ~5 minutes, check your internet connection.
+
+### 🔑 Backend Environment Variables
+| Variable | Required? | Purpose |
+|---|---|---|
+| `ALLOWED_ORIGINS` | Recommended for production | Comma-separated list of frontend URLs allowed to call the API (e.g. `https://stockintel.vercel.app`). Defaults to local dev ports only — **set this on your hosted backend or the deployed frontend will be blocked by CORS.** |
+| `FRED_API_KEY` | Optional | Free key from [fred.stlouisfed.org](https://fred.stlouisfed.org/docs/api/api_key.html). Enables global macro indicators (rates, inflation, GDP, PMI) on the Macro Intelligence page. Without it, that section shows a clear "not configured" message instead of failing. |
+
+### 🚀 Releases & Auto-Update
+Every push to `main` triggers `.github/workflows/release.yml`, which:
+1. Bumps the version in `VERSION` (patch by default — trigger manually via the Actions tab for a minor/major bump)
+2. Builds a **single self-contained executable** for Windows, Linux, and macOS (frontend + backend bundled together — no separate Python/Node install needed to run it)
+3. Publishes a GitHub Release with all three executables attached
+
+**For client systems that want to auto-update:** poll `GET /api/version/check` (requires the `GITHUB_REPO` env var set to `owner/repo` on your server). It returns `update_available: true/false` and a direct download URL per platform — this uses GitHub's own release API, not a custom version server, so it's free and needs nothing extra hosted.
+
+```bash
+curl http://localhost:8000/api/version/check
+# {"current_version": "1.0.3", "latest_version": "1.0.4", "update_available": true,
+#  "assets": [{"name": "stockintel-windows.exe", "download_url": "...", "size_bytes": 45000000}, ...]}
+```
+
+### 🩺 Verifying a Deploy
+After deploying (or before trusting this locally with real capital decisions), hit:
+```
+GET /api/system-status
+```
+This reports real operational status per layer — not a pulse check. It tells you whether FRED is configured, whether local price data is loaded, and how much recommendation history exists for adaptive weighting. Check this first if something looks off.
+
+### 🧪 Running Tests
+```bash
+cd backend
+pip install -r requirements-dev.txt
+pytest tests/ -v
+```
+32 tests covering every API endpoint, data-integrity guards (your `portfolio_trades.csv` is snapshotted and restored around every test run), and dedicated tests for the Layer 12→10 adaptive weighting logic — the highest-stakes piece of code in this repo, since it changes what drives a Buy/Sell recommendation based on historical performance. Run this after any backend change, before deploying.
+
+**Not covered by these tests:** live calls to FRED, World Bank, or stooq (Layers 1–4). Those are tested against mocked responses only. The first real deploy should manually check `/api/intelligence/global`, `/api/intelligence/country`, and `/api/intelligence/sector` against live network access before trusting their output.
 
 ---
 
@@ -88,7 +120,8 @@ StockIntel/
 │   ├── services/
 │   │   ├── nse_scraper.py      ← NSE price fetcher
 │   │   ├── data_loader.py      ← Data management
-│   │   ├── gold.py             ← Gold trading module
+│   │   ├── technical.py        ← Technical indicators (RSI/MACD/ADX/ATR)
+│   │   ├── valuation.py        ← DCF / DDM intrinsic value models
 │   │   ├── scoring.py          ← 60-point scoring model
 │   │   ├── portfolio.py        ← Portfolio tracker
 │   │   └── analytics.py        ← Analytics engine

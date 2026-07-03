@@ -30,7 +30,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
-DATA_DIR  = Path(__file__).parent.parent / "data"
+from services.paths import DATA_DIR
 CACHE_DIR = DATA_DIR / "nse_cache"
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 

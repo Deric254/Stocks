@@ -5,9 +5,8 @@ portfolio.py — Trade storage and position calculation with DIVIDEND support.
 import uuid
 import pandas as pd
 from datetime import datetime
-from pathlib import Path
 
-DATA_DIR   = Path(__file__).parent.parent / "data"
+from services.paths import DATA_DIR
 TRADES_CSV = DATA_DIR / "portfolio_trades.csv"
 
 COLUMNS = ["trade_id", "ticker", "trade_type", "quantity", "price", "date"]

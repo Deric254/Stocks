@@ -12,6 +12,12 @@ from collections import defaultdict
 
 class AnalyticsEngine:
 
+    def get_equity_curve(self, portfolio_mgr, loader) -> list:
+        """Public accessor so other modules (e.g. risk.py) can reuse the
+        equity curve without duplicating the build logic."""
+        trades_df = pd.DataFrame(portfolio_mgr.get_all_trades())
+        return self._build_equity_curve(trades_df, loader)
+
     def get_analytics(self, portfolio_mgr, loader, scorer, stock_meta_list: list) -> dict:
         """
         Full analytics payload for the /api/analytics endpoint.

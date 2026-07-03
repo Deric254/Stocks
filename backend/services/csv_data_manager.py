@@ -34,8 +34,7 @@ from typing import Optional
 
 import pandas as pd
 
-DATA_DIR = Path(__file__).parent.parent / "data"
-DATA_DIR.mkdir(parents=True, exist_ok=True)
+from services.paths import DATA_DIR
 
 PRICES_CSV       = DATA_DIR / "prices_manual.csv"
 FUNDAMENTALS_CSV = DATA_DIR / "fundamentals_manual.csv"
@@ -45,6 +44,16 @@ META_JSON        = DATA_DIR / "upload_meta.json"
 # Separate locks: one for in-memory state, one for disk writes
 _mem_lock  = threading.RLock()   # RLock so same thread can re-enter
 _disk_lock = threading.Lock()    # disk writes serialised separately
+# Dedicated to snapshot_daily_prices specifically: _mem_lock alone only
+# protects the in-memory dict mutation, not the "snapshot the dict then
+# write it to disk" sequence as a whole — two near-simultaneous callers
+# could each mutate safely, then race to persist, with the slower one's
+# stale snapshot clobbering the faster one's newer data on disk (a real
+# lost-update bug, found by a concurrency test — see
+# test_isolation_concurrent_snapshots_do_not_corrupt). This lock makes
+# the entire mutate+persist sequence for THIS function atomic relative
+# to itself, without changing the locking behavior of any other method.
+_snapshot_write_lock = threading.Lock()
 _init_lock = threading.Lock()    # singleton init
 
 # ── Fields ────────────────────────────────────────────────────────────────────
@@ -840,6 +849,120 @@ class CSVDataManager:
                 "issues": issues, "issue_count": len(issues),
             })
         return result
+
+    # ── DAILY PRICE SNAPSHOT (auto-accumulates real history over time) ──────
+
+    def snapshot_daily_prices(self, live_prices: dict) -> dict:
+        """
+        Appends today's REAL scraped current price into price history for
+        every ticker the scraper found — one row per ticker per calendar
+        day. This is the only way NSE historical price data can exist for
+        free, since no free provider publishes it: it has to be captured
+        day by day, going forward, from the one thing that IS free (the
+        current live price).
+
+        ACID properties, deliberately:
+          Atomicity  — either this whole snapshot's rows land in the
+                       in-memory dict AND the resulting file write
+                       completes, or (on any exception) nothing is
+                       persisted; _write_csv_atomic uses a temp-file +
+                       rename so a crash mid-write can never leave a
+                       half-written history file on disk.
+          Consistency — idempotent per (ticker, date): calling this
+                       twice in the same day (e.g. a redeploy, a retry)
+                       never creates a duplicate row. Only rows with a
+                       real positive price are written — a scraper
+                       hiccup returning 0/None for a ticker silently
+                       skips that ticker rather than polluting history
+                       with a bad data point.
+          Isolation  — the ENTIRE mutate-snapshot-persist sequence is
+                       serialized end-to-end via a dedicated write lock
+                       (not just the in-memory mutation) — two
+                       near-simultaneous callers cannot race each
+                       other's disk write and silently lose a row.
+                       This was a real bug caught by a concurrency
+                       test, not a hypothetical: without this lock,
+                       the slower of two concurrent callers could
+                       persist a stale snapshot that clobbers the
+                       faster one's newer data.
+          Durability — same _write_csv_atomic used everywhere else:
+                       temp file written and fsynced by the OS, then
+                       atomically renamed over the real file.
+
+        Returns a small report so the caller (startup, or a scheduled
+        job) can log what actually happened without guessing.
+        """
+        today = datetime.now().date().isoformat()
+        added, skipped_no_price, skipped_duplicate = [], [], []
+
+        # Serializes the WHOLE mutate+persist sequence against other
+        # concurrent calls to this function — see docstring above.
+        with _snapshot_write_lock:
+            with _mem_lock:
+                for base_ticker, entry in live_prices.items():
+                    price = _safe_float(entry.get("price"))
+                    if price is None or price <= 0:
+                        skipped_no_price.append(base_ticker)
+                        continue
+
+                    existing_dates = {str(row.get("date", "")) for row in self._price_history.get(base_ticker, [])}
+                    if today in existing_dates:
+                        skipped_duplicate.append(base_ticker)
+                        continue
+
+                    row = {
+                        "ticker": base_ticker,
+                        "date": today,
+                        "open": price, "high": price, "low": price, "close": price,
+                        "volume": entry.get("volume", 0) or 0,
+                        "uploaded_at": datetime.now().isoformat(),
+                        "source": "auto_snapshot",
+                    }
+                    self._price_history.setdefault(base_ticker, []).append(row)
+                    added.append(base_ticker)
+
+                    # Keep the "current price" table in sync too, but only
+                    # advance it — never let an older/equal snapshot regress
+                    # a more recent manual upload (same rule upload_prices uses).
+                    existing_date = str(self._prices.get(base_ticker, {}).get("date", "2000-01-01"))
+                    if today >= existing_date:
+                        self._prices[base_ticker] = {
+                            "ticker": base_ticker, "price": price, "date": today,
+                            "uploaded_at": datetime.now().isoformat(), "source": "auto_snapshot",
+                        }
+
+                if added:
+                    self._meta.update({
+                        "last_auto_snapshot": datetime.now().isoformat(),
+                        "last_auto_snapshot_count": len(added),
+                        # Keep this in sync with reality — /api/system-status
+                        # and other consumers read prices_ticker_count as
+                        # "how many tickers have a real current price," and
+                        # that must be true after an auto-snapshot too, not
+                        # only after a manual CSV upload (which is the only
+                        # path that used to set it — a real gap found by
+                        # actually running the built executable end to end).
+                        "prices_ticker_count": len(self._prices),
+                    })
+
+                prices_snap  = dict(self._prices)
+                history_snap = {t: list(v) for t, v in self._price_history.items()}
+                meta_snap    = dict(self._meta)
+
+            # Disk write happens outside _mem_lock (readers aren't
+            # blocked by slow disk I/O) but still inside
+            # _snapshot_write_lock, so it can't race another concurrent
+            # call to this same function.
+            if added:
+                self._persist_prices(prices_snap, history_snap, meta_snap)
+
+        return {
+            "date": today,
+            "added": added,
+            "skipped_no_price": skipped_no_price,
+            "skipped_duplicate": skipped_duplicate,
+            "total_added": len(added),
+        }
 
 
 # ── Thread-safe singleton ─────────────────────────────────────────────────────

@@ -12,7 +12,7 @@ from pathlib import Path
 
 from services.csv_data_manager import get_manager
 
-DATA_DIR = Path(__file__).parent.parent / "data"
+from services.paths import DATA_DIR
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 WATCHLIST_JSON = DATA_DIR / "watchlist.json"
