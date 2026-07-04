@@ -49,18 +49,10 @@ jobs:
           fi
 
           NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}"
-
-          # 🌟 MINIMAL FIX: Check if the newly calculated tag already exists on GitHub
-          if git ls-remote --tags origin "refs/tags/v$NEW_VERSION" | grep -q "refs/tags/v$NEW_VERSION"; then
-            echo "::error::Cannot release! Tag v$NEW_VERSION already exists on GitHub. Please update your local VERSION file first."
-            exit 1
-          fi
-
           echo "$NEW_VERSION" > VERSION
           echo "new_version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=v$NEW_VERSION" >> "$GITHUB_OUTPUT"
           echo "Bumping $CURRENT -> $NEW_VERSION"
-
 
       - name: Commit version bump
         run: |
