@@ -89,7 +89,18 @@ FRED_SERIES = {
     "M2SL":      ("M2 Money Supply", "$ billions"),
     "HOUST":     ("Housing Starts", "thousands, annualized"),
     "UMCSENT":   ("Consumer Sentiment (U. Michigan)", "index"),
-    "NAPM":      ("ISM Manufacturing PMI", "index — 50 = expansion/contraction line"),
+    # NOTE: FRED's old ISM Manufacturing PMI series ("NAPM") was
+    # discontinued around 2016 when the Fed stopped redistributing
+    # ISM's proprietary data — that series ID will always fail now,
+    # not a bug in this code. INDPRO (Industrial Production Index) is
+    # a genuine, currently-active free substitute for manufacturing/
+    # industrial activity, but it's an output-level index (base ~100),
+    # NOT a diffusion index like PMI — there's no "50 = expansion"
+    # threshold for it. Honestly labeled as a substitute, not the
+    # literal ISM PMI, since no free equivalent of the real thing
+    # exists — see _classify_regime() for how it's actually used
+    # (year-over-year direction, not an absolute level).
+    "INDPRO":    ("Industrial Production Index (PMI substitute - no free ISM PMI exists)", "index, base ~100"),
 }
 
 
@@ -197,14 +208,18 @@ def get_commodity_or_index(key: str) -> dict:
 
 # ── Composite Global scores ───────────────────────────────────────────
 
-def _classify_regime(fed_funds, cpi_yoy, yield_curve, pmi) -> str:
+def _classify_regime(fed_funds, cpi_yoy, yield_curve, industrial_yoy) -> str:
     """Simple, transparent rule-based regime classification —
-    deliberately not a black box per constitution Layer 10 requirement."""
+    deliberately not a black box per constitution Layer 10 requirement.
+    industrial_yoy: year-over-year % change in industrial production,
+    used as a manufacturing-activity direction signal since no free
+    ISM-PMI-equivalent (diffusion index, 50 = expansion line) exists —
+    see FRED_SERIES['INDPRO'] comment for why."""
     signals = []
     if yield_curve is not None:
         signals.append("inverted_curve" if yield_curve < 0 else "normal_curve")
-    if pmi is not None:
-        signals.append("expansion" if pmi >= 50 else "contraction")
+    if industrial_yoy is not None:
+        signals.append("expansion" if industrial_yoy >= 0 else "contraction")
     if cpi_yoy is not None:
         signals.append("high_inflation" if cpi_yoy > 4 else ("low_inflation" if cpi_yoy < 2 else "moderate_inflation"))
 
@@ -238,9 +253,9 @@ def compute_global_intelligence() -> dict:
     fed_funds = indicators["DFF"].get("value")
     cpi_yoy = indicators["CPIAUCSL"].get("yoy_change_pct")
     yield_curve = indicators["T10Y2Y"].get("value")
-    pmi = indicators["NAPM"].get("value")
+    industrial_yoy = indicators["INDPRO"].get("yoy_change_pct")
 
-    regime = _classify_regime(fed_funds, cpi_yoy, yield_curve, pmi)
+    regime = _classify_regime(fed_funds, cpi_yoy, yield_curve, industrial_yoy)
 
     vix_val = market["vix"].get("value")
     risk_score = None

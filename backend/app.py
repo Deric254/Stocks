@@ -70,25 +70,30 @@ def _start_keep_alive():
     Two-layer keep-alive for Render free tier:
     1. Self-ping every 14 min (keeps process warm between external pings)
     2. Designed to work WITH UptimeRobot free plan pinging /api/ping every 5 min
-    
+
     Set RENDER_EXTERNAL_URL env var in Render dashboard to enable self-ping.
     Also add UptimeRobot monitor: https://your-app.onrender.com/api/ping
+
+    Only does anything when RENDER_EXTERNAL_URL is actually set — a local
+    desktop .exe user has no business seeing "configure this in Render"
+    messages for a hosting platform they're not using. Silent no-op
+    otherwise, not a printed instruction aimed at the wrong audience.
     """
+    self_url = os.environ.get("RENDER_EXTERNAL_URL", "").rstrip("/")
+    if not self_url:
+        return  # not running on Render — nothing to do, nothing to print
+
     def _loop():
         time.sleep(90)  # wait for startup
-        self_url = os.environ.get("RENDER_EXTERNAL_URL", "").rstrip("/")
-        if not self_url:
-            print("[keep-alive] RENDER_EXTERNAL_URL not set — add it in Render env vars")
-            return
         ping_url = f"{self_url}/api/ping"
-        print(f"[keep-alive] Self-ping every 14 min → {ping_url}")
+        print(f"[keep-alive] Self-ping every 14 min -> {ping_url}")
         while True:
             try:
                 import requests as _req
                 r = _req.get(ping_url, timeout=15)
-                print(f"[keep-alive] ✓ {r.status_code} at {datetime.now().strftime('%H:%M:%S')}")
+                print(f"[keep-alive] OK {r.status_code} at {datetime.now().strftime('%H:%M:%S')}")
             except Exception as e:
-                print(f"[keep-alive] ✗ ping failed: {e}")
+                print(f"[keep-alive] ping failed: {e}")
             time.sleep(14 * 60)
     threading.Thread(target=_loop, daemon=True).start()
 
@@ -1232,6 +1237,36 @@ if _static_dir.exists():
         return FileResponse(_static_dir / "index.html")
 
 
+def _open_browser_when_ready(port: int, timeout_seconds: int = 30):
+    """
+    Waits for the server to actually be accepting connections, then
+    opens the default browser to it — automatically, once. A client
+    running a double-clicked .exe should never have to know the app
+    talks over localhost:8000 or manually type a URL; the app should
+    just appear, the way any normal desktop application does.
+    Runs in a background thread so it never blocks server startup.
+    """
+    import webbrowser
+    import urllib.request
+
+    def _wait_and_open():
+        url = f"http://localhost:{port}"
+        deadline = time.time() + timeout_seconds
+        while time.time() < deadline:
+            try:
+                urllib.request.urlopen(f"{url}/api/ping", timeout=1)
+                webbrowser.open(url)
+                return
+            except Exception:
+                time.sleep(0.5)
+        # Timed out waiting — don't silently fail the whole app over
+        # this; the user can still open the URL manually, and the
+        # console banner already told them what it is.
+        print(f"[stockintel] Could not auto-open browser — please open {url} manually.")
+
+    threading.Thread(target=_wait_and_open, daemon=True).start()
+
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
     is_frozen = getattr(sys, "frozen", False)
@@ -1244,7 +1279,20 @@ if __name__ == "__main__":
     # case to avoid the same import-by-string failure mode entirely.
     reload = (not is_frozen) and os.environ.get("ENVIRONMENT", "development") == "development"
     if is_frozen:
-        print(f"[stockintel] Running as packaged executable v{APP_VERSION} — http://localhost:{port}")
-        uvicorn.run(app, host="0.0.0.0", port=port, reload=False)
+        # A client running this .exe is not a developer — they should
+        # see a short, friendly banner and their browser opening, not
+        # raw internal startup logs or a bare console full of uvicorn
+        # access-log lines for every request. log_level="warning"
+        # suppresses the per-request noise; errors still show if
+        # something genuinely breaks.
+        print("=" * 50)
+        print(f"  Stock Intel v{APP_VERSION}")
+        print("=" * 50)
+        print(f"  Starting up... your browser will open automatically.")
+        print(f"  If it doesn't, go to: http://localhost:{port}")
+        print(f"  Close this window to stop the app.")
+        print("=" * 50)
+        _open_browser_when_ready(port)
+        uvicorn.run(app, host="0.0.0.0", port=port, reload=False, log_level="warning")
     else:
         uvicorn.run("app:app", host="0.0.0.0", port=port, reload=reload)

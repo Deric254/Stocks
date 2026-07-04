@@ -59,7 +59,16 @@ def _momentum_pct(closes: list, lookback_days: int):
 # ── Global sector rotation (Layer 3, stooq-sourced) ──────────────────────
 
 def get_global_sector_momentum() -> dict:
-    with ThreadPoolExecutor(max_workers=len(SECTOR_ETFS)) as ex:
+    # Concurrency kept modest - see compute_country_intelligence's
+    # docstring in country.py for the same reasoning. Note: if every
+    # stooq call fails uniformly regardless of concurrency (as seen in
+    # a live deployment test - VIX, gold, oil, DXY, and every sector
+    # ETF all failed at once, from calls made at different times, not
+    # one simultaneous burst), the more likely cause is stooq blocking
+    # the hosting provider's IP range outright, which throttling alone
+    # cannot fix - see stooq_client.py's fetch failure logging for
+    # diagnosing that specifically from server logs.
+    with ThreadPoolExecutor(max_workers=min(len(SECTOR_ETFS), 5)) as ex:
         futures = {sector: ex.submit(fetch_stooq_closes, symbol, 90) for sector, symbol in SECTOR_ETFS.items()}
         closes_by_sector = {sector: f.result() for sector, f in futures.items()}
 

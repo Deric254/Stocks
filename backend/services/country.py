@@ -58,6 +58,12 @@ def _cache_set(key, value):
     _CACHE[key] = {"value": value, "ts": time.time()}
 
 
+_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+}
+
+
 def _fetch_indicator(country_code: str, indicator_code: str):
     """Returns most recent (year, value) pair, or None."""
     cache_key = f"{country_code}:{indicator_code}"
@@ -71,10 +77,16 @@ def _fetch_indicator(country_code: str, indicator_code: str):
             "format": "json",
             "per_page": 10,
             "mrnev": 5,  # most recent non-empty values
-        }, timeout=10)
+        }, headers=_HEADERS, timeout=15)
         resp.raise_for_status()
         data = resp.json()
         if not isinstance(data, list) or len(data) < 2 or not data[1]:
+            # World Bank returns a dict (not the expected 2-element
+            # list) when a request param is malformed, or an empty
+            # second element when the country/indicator combination
+            # has no data. Printed so a real cause is diagnosable from
+            # server logs instead of a blanket, silent "no data."
+            print(f"[worldbank] Unexpected response for {country_code}/{indicator_code}: {str(data)[:200]!r}")
             return None
         rows = [(r["date"], r["value"]) for r in data[1] if r.get("value") is not None]
         if not rows:
@@ -83,7 +95,8 @@ def _fetch_indicator(country_code: str, indicator_code: str):
         result = rows[-1]
         _cache_set(cache_key, result)
         return result
-    except Exception:
+    except Exception as e:
+        print(f"[worldbank] fetch failed for {country_code}/{indicator_code}: {e}")
         return None
 
 
@@ -184,13 +197,20 @@ def get_country_profile(country_code: str) -> dict:
 
 def compute_country_intelligence(country_codes: list = None) -> dict:
     """Main entry point — Layer 2 output across all tracked countries.
-    Every (country, indicator) pair is fetched concurrently — was up to
-    6 indicators x 7 countries = 42 sequential blocking HTTP calls,
-    now bounded by the slowest single call."""
+
+    Concurrency deliberately kept modest (5, not the theoretical max of
+    ~42 for the full country x indicator grid): World Bank's API is
+    public and unauthenticated, which typically means a much stricter
+    per-IP burst limit than an API-keyed service like FRED. A live
+    deployment test showed FRED (fewer, smaller bursts) succeeding
+    while every single World Bank call failed uniformly — the
+    signature of a burst-triggered rate limit or temporary block, not
+    42 independent failures. Trading some parallelism for actually
+    getting real data back."""
     codes = country_codes or list(DEFAULT_COUNTRIES.keys())
     all_pairs = [(code, ind) for code in codes for ind in WB_INDICATORS]
 
-    with ThreadPoolExecutor(max_workers=min(len(all_pairs) or 1, 24)) as ex:
+    with ThreadPoolExecutor(max_workers=min(len(all_pairs) or 1, 5)) as ex:
         futures = {(code, ind): ex.submit(get_country_indicator, code, ind) for code, ind in all_pairs}
         results = {pair: f.result() for pair, f in futures.items()}
 
