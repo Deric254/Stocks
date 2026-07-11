@@ -14,6 +14,7 @@ function fetchTimeout(url, opts={}, ms=25000){
 }
 const get  = (p) => fetchTimeout(`${API}${p}`);
 const post = (p,b) => fetchTimeout(`${API}${p}`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(b)});
+const del  = (p) => fetchTimeout(`${API}${p}`,{method:"DELETE"});
 
 // ── dericBI colour palette ─────────────────────────────────────────────────
 const C = {
@@ -172,7 +173,7 @@ function TradeModal({tickers=[],preselect="",defaultType="BUY",onClose,onSubmit,
   const inp={width:"100%",background:"#f9fafb",border:"1px solid "+C.borderGray,borderRadius:8,padding:"10px 13px",color:C.text,fontSize:14,outline:"none",boxSizing:"border-box",fontFamily:"inherit"};
   return(
     <div style={{position:"fixed",inset:0,background:"#00000066",zIndex:1000,display:"flex",alignItems:"center",justifyContent:"center",padding:16}} onClick={onClose}>
-      <div onClick={e=>e.stopPropagation()} style={{background:C.surface,border:"1px solid "+C.borderGray,borderRadius:16,padding:"24px 24px 28px",width:440,boxShadow:"0 20px 60px #00000022",borderTop:"4px solid "+C.green,maxHeight:"90vh",overflowY:"auto"}}>
+      <div onClick={e=>e.stopPropagation()} style={{background:C.surface,border:"1px solid "+C.borderGray,borderRadius:16,padding:"24px 24px 28px",width:"min(440px, 92vw)",boxShadow:"0 20px 60px #00000022",borderTop:"4px solid "+C.green,maxHeight:"90vh",overflowY:"auto"}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:18}}>
           <span style={{fontSize:17,fontWeight:800,color:C.text}}>Log Trade</span>
           <button onClick={onClose} style={{background:"none",border:"none",color:C.muted,fontSize:22,cursor:"pointer",lineHeight:1}}>×</button>
@@ -301,7 +302,7 @@ function Dashboard({stocks,portfolio,onSelect,onTrade}){
   return(
     <div>
       {/* KPI row */}
-      <div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:14,marginBottom:24}}>
+      <div className="stat-grid" style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:14,marginBottom:24}}>
         <Stat icon="🏆" label="Top Pick Today"   value={best?.ticker||"—"}       sub={"Score "+(best?.scores?.total_score||"—")+"/60 · KES "+(best?.metrics?.price||"—")} accent={C.green} topBorder={C.gold}/>
         <Stat icon="💼" label="Portfolio Value"  value={fmt.kes(s.current_value)} sub={"Invested "+fmt.kes(s.total_invested)} accent={C.blue}/>
         <Stat icon={plPos?"📈":"📉"} label="Unrealised P/L" value={fmt.kes(s.unrealized_pl)} sub={fmt.pct(s.return_pct)+" return"} accent={plPos?C.green:C.red}/>
@@ -310,7 +311,7 @@ function Dashboard({stocks,portfolio,onSelect,onTrade}){
       </div>
 
       {/* Hero + top scored */}
-      <div style={{display:"grid",gridTemplateColumns:"1.2fr 0.8fr",gap:18,marginBottom:18}}>
+      <div className="stat-grid" style={{display:"grid",gridTemplateColumns:"1.2fr 0.8fr",gap:18,marginBottom:18}}>
         {best&&(
           <div style={{background:C.surface,border:"1px solid "+C.borderGray,borderRadius:14,padding:24,boxShadow:"0 2px 12px #0000000A",position:"relative",overflow:"hidden"}}>
             <div style={{position:"absolute",top:0,left:0,right:0,height:4,background:"linear-gradient(90deg,"+C.gold+","+C.green+","+C.blue+")"}}/>
@@ -324,7 +325,7 @@ function Dashboard({stocks,portfolio,onSelect,onTrade}){
               </div>
               <Spark data={best.sparkline||[]} w={110} h={44}/>
             </div>
-            <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8,marginBottom:14}}>
+            <div className="stat-grid" style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8,marginBottom:14}}>
               {[["Profitability",best.scores.profitability_score],["Value",best.scores.value_score],["Dividends",best.scores.dividend_score],["Growth",best.scores.growth_score],["Asset Safety",best.scores.asset_safety_score],["Debt Safety",best.scores.debt_safety_score]].map(([l,sv])=>(
                 <div key={l} style={{background:C.greenBg,borderRadius:8,padding:"8px 6px",textAlign:"center",border:"1px solid "+C.border}}>
                   <div style={{fontSize:9,color:C.muted,marginBottom:2,fontWeight:600}}>{l}</div>
@@ -351,7 +352,7 @@ function Dashboard({stocks,portfolio,onSelect,onTrade}){
         </div>
       </div>
 
-      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:18}}>
+      <div className="stat-grid" style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:18}}>
         <div style={{background:C.surface,border:"1px solid "+C.borderGray,borderRadius:14,padding:20,boxShadow:"0 2px 12px #0000000A"}}>
           <div style={{fontSize:11,color:C.green,letterSpacing:"0.12em",textTransform:"uppercase",fontWeight:700,marginBottom:12}}>💰 Highest Dividend Yield</div>
           <MiniList list={topYield} labelFn={s=>fmt.pct(s.metrics?.dividend_yield)}/>
@@ -418,6 +419,7 @@ function Screener({stocks,sectors,onSelect,onTrade}){
       </div>
 
       <div style={{background:C.surface,border:"1px solid "+C.borderGray,borderRadius:13,overflow:"hidden",boxShadow:"0 2px 12px #0000000A"}}>
+      <div className="resp-table-wrap" style={{overflowX:"auto"}}>
         <table style={{width:"100%",borderCollapse:"collapse"}}>
           <thead>
             <tr style={{background:C.greenBg,borderBottom:"2px solid "+C.border}}>
@@ -471,6 +473,7 @@ function Screener({stocks,sectors,onSelect,onTrade}){
             }
           </tbody>
         </table>
+        </div>
       </div>
     </div>
   );
@@ -601,7 +604,7 @@ function StockDetail({ticker,onBack,onTrade,tickers,onToast}){
       {tab==="overview"&&(
         <div>
           {/* Score breakdown */}
-          <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:12,marginBottom:18}}>
+          <div className="stat-grid" style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:12,marginBottom:18}}>
             {scoreBreakdown.map(({key,label,icon,desc})=>{
               const val=scores[key]||0,c=sc60(val*6);
               const barW=(val/10)*100;
@@ -623,7 +626,7 @@ function StockDetail({ticker,onBack,onTrade,tickers,onToast}){
             })}
           </div>
           {/* Ratios */}
-          <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:12}}>
+          <div className="stat-grid" style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:12}}>
             <Stat icon="💰" label="EPS"             value={fmt.num(f.eps)}              accent={C.green}/>
             <Stat icon="📚" label="Book Value/Share" value={"KES "+fmt.num(f.bvps)}      accent={C.green}/>
             <Stat icon="📊" label="P/E Ratio"        value={fmt.num(f.pe)}               accent={C.blue}/>
@@ -651,7 +654,7 @@ function StockDetail({ticker,onBack,onTrade,tickers,onToast}){
         const tsColor = ts=>ts==null?C.muted:ts>=70?C.green:ts>=50?"#86efac":ts>=30?C.yellow:C.red;
         return(
           <div>
-            <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:12,marginBottom:18}}>
+            <div className="stat-grid" style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:12,marginBottom:18}}>
               <div style={{background:C.surface,border:"1px solid "+C.borderGray,borderRadius:12,padding:18,borderTop:"3px solid "+tsColor(t.technical_score?.score)}}>
                 <div style={{fontSize:11,color:C.muted,fontWeight:700,marginBottom:6}}>TECHNICAL SCORE</div>
                 <div style={{fontSize:28,fontWeight:900,color:tsColor(t.technical_score?.score)}}>{t.technical_score?.score??"—"}<span style={{fontSize:12,color:C.muted}}>/100</span></div>
@@ -660,7 +663,7 @@ function StockDetail({ticker,onBack,onTrade,tickers,onToast}){
               <Stat icon="📐" label="Trend" value={t.trend?.direction||"—"} accent={C.blue} sub={t.trend?.sma20?`SMA20: ${fmt.num(t.trend.sma20)}`:undefined}/>
               <Stat icon="📊" label="RSI (14)" value={t.rsi!=null?t.rsi.toFixed(1):"—"} accent={t.rsi>70?C.red:t.rsi<30?C.green:C.blue}/>
             </div>
-            <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:12}}>
+            <div className="stat-grid" style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:12}}>
               <Stat icon="〰️" label="SMA 20"  value={t.trend?.sma20!=null?fmt.num(t.trend.sma20):"—"} accent={C.blue}/>
               <Stat icon="〰️" label="SMA 50"  value={t.trend?.sma50!=null?fmt.num(t.trend.sma50):"—"} accent={C.blue}/>
               <Stat icon="〰️" label="SMA 200" value={t.trend?.sma200!=null?fmt.num(t.trend.sma200):"—"} accent={C.blue}/>
@@ -724,7 +727,7 @@ function StockDetail({ticker,onBack,onTrade,tickers,onToast}){
                 </div>
               </div>
             )}
-            <div style={{display:"grid",gridTemplateColumns:"repeat(2,1fr)",gap:18}}>
+            <div className="stat-grid" style={{display:"grid",gridTemplateColumns:"repeat(2,1fr)",gap:18}}>
               <Model title="📐 DCF (Discounted Cash Flow)" m={v.dcf}/>
               <Model title="💵 DDM (Dividend Discount Model)" m={v.ddm}/>
             </div>
@@ -792,7 +795,7 @@ function StockDetail({ticker,onBack,onTrade,tickers,onToast}){
             </div>
 
             {/* Component breakdown */}
-            <div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:10,marginBottom:18}}>
+            <div className="stat-grid" style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:10,marginBottom:18}}>
               {Object.entries(rec.component_scores).map(([key,val])=>(
                 <div key={key} style={{background:C.surface,border:"1px solid "+C.borderGray,borderRadius:10,padding:"12px 10px",textAlign:"center"}}>
                   <div style={{fontSize:10,color:C.muted,fontWeight:700,textTransform:"uppercase",marginBottom:4}}>{key.replace("_"," ")}</div>
@@ -859,7 +862,7 @@ function StockDetail({ticker,onBack,onTrade,tickers,onToast}){
               <div style={{fontSize:28,fontWeight:900,color:flowColor}}>{cf.capital_flow_score}<span style={{fontSize:12,color:C.muted}}>/100</span></div>
               <div style={{fontSize:13,color:C.muted,marginTop:4}}>{cf.capital_flow_label}</div>
             </div>
-            <div style={{display:"grid",gridTemplateColumns:"repeat(2,1fr)",gap:12,marginBottom:14}}>
+            <div className="stat-grid" style={{display:"grid",gridTemplateColumns:"repeat(2,1fr)",gap:12,marginBottom:14}}>
               <Stat icon="📊" label="OBV Trend" value={cf.obv_trend} accent={cf.obv_trend==="Accumulation"?C.green:C.red} sub={cf.obv_slope_pct_20d!=null?`${cf.obv_slope_pct_20d>=0?"+":""}${cf.obv_slope_pct_20d}% (20d)`:undefined}/>
               <Stat icon="📈" label="A/D Line Trend" value={cf.ad_line_trend} accent={cf.ad_line_trend==="Accumulation"?C.green:C.red}/>
               <Stat icon="🔊" label="Relative Volume" value={cf.relative_volume!=null?cf.relative_volume+"x":"—"} accent={cf.relative_volume>1.2?C.gold:C.blue} sub={cf.relative_volume_note}/>
@@ -887,7 +890,7 @@ function StockDetail({ticker,onBack,onTrade,tickers,onToast}){
           </div>
           {/* 5-year charts */}
           {hc&&hc.years?.length>0&&(
-            <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:18}}>
+            <div className="stat-grid" style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:18}}>
               {[
                 {title:"5-Year Revenue",data:hc.revenue,color:C.blue},
                 {title:"5-Year Net Income",data:hc.net_income,color:C.green},
@@ -910,7 +913,7 @@ function StockDetail({ticker,onBack,onTrade,tickers,onToast}){
       {tab==="my position"&&(
         <div>
           {pos?(
-            <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:12,marginBottom:16}}>
+            <div className="stat-grid" style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:12,marginBottom:16}}>
               <Stat icon="🧾" label="Shares Held"   value={pos.quantity?.toLocaleString()} accent={C.green}/>
               <Stat icon="💳" label="Avg Cost"       value={"KES "+fmt.num(pos.avg_cost)}   accent={C.green}/>
               <Stat icon="📍" label="Current Price"  value={"KES "+fmt.num(cur,2)}           accent={C.text} topBorder={C.borderGray}/>
@@ -964,7 +967,7 @@ function StockDetail({ticker,onBack,onTrade,tickers,onToast}){
 // ══════════════════════════════════════════════════════════════════════════
 // PORTFOLIO
 // ══════════════════════════════════════════════════════════════════════════
-function Portfolio({portfolio,onAdd,onTrade,stocks}){
+function Portfolio({portfolio,onAdd,onTrade,onDeletePosition,stocks}){
   const s=portfolio.summary,plPos=(s.unrealized_pl||0)>=0;
   const [risk,setRisk]=useState(null);
   const [riskLoading,setRiskLoading]=useState(true);
@@ -988,7 +991,7 @@ function Portfolio({portfolio,onAdd,onTrade,stocks}){
   return(
     <div>
       {/* Summary */}
-      <div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:14,marginBottom:24}}>
+      <div className="stat-grid" style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:14,marginBottom:24}}>
         <Stat icon="💼" label="Total Invested"    value={fmt.kes(s.total_invested)}   accent={C.muted} topBorder={C.borderGray}/>
         <Stat icon="💹" label="Current Value"      value={fmt.kes(s.current_value)}    accent={C.blue}/>
         <Stat icon="📈" label="Unrealised P/L"     value={fmt.kes(s.unrealized_pl)}    accent={plPos?C.green:C.red}/>
@@ -1027,7 +1030,7 @@ function Portfolio({portfolio,onAdd,onTrade,stocks}){
       {!riskLoading&&risk&&(
         <div style={{background:C.surface,border:"1px solid "+C.borderGray,borderRadius:13,padding:18,marginBottom:18,boxShadow:"0 2px 12px #0000000A"}}>
           <div style={{fontSize:12,fontWeight:700,color:C.text,marginBottom:12}}>Risk Metrics</div>
-          <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:12,marginBottom:risk.correlation_matrix?.available?16:0}}>
+          <div className="stat-grid" style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:12,marginBottom:risk.correlation_matrix?.available?16:0}}>
             <Stat icon="📐" label="Sharpe Ratio"
               value={risk.sharpe_ratio?.available?risk.sharpe_ratio.value:"—"}
               sub={risk.sharpe_ratio?.available?risk.sharpe_ratio.interpretation:risk.sharpe_ratio?.reason}
@@ -1088,6 +1091,7 @@ function Portfolio({portfolio,onAdd,onTrade,stocks}){
         <button onClick={onAdd} style={{padding:"8px 20px",borderRadius:8,border:"2px solid "+C.green,background:C.greenLt,color:C.greenDk,fontWeight:700,fontSize:13,cursor:"pointer",fontFamily:"inherit"}}>+ Add Trade</button>
       </div>
       <div style={{background:C.surface,border:"1px solid "+C.borderGray,borderRadius:13,overflow:"hidden",boxShadow:"0 2px 12px #0000000A"}}>
+      <div className="resp-table-wrap" style={{overflowX:"auto"}}>
         <table style={{width:"100%",borderCollapse:"collapse"}}>
           <thead>
             <tr style={{background:C.greenBg,borderBottom:"2px solid "+C.border}}>
@@ -1119,6 +1123,10 @@ function Portfolio({portfolio,onAdd,onTrade,stocks}){
                       <div style={{display:"flex",gap:4}}>
                         <TradeBtn ticker={h.ticker} type="BUY"  onTrade={onTrade} small/>
                         <TradeBtn ticker={h.ticker} type="SELL" onTrade={onTrade} small/>
+                        <button onClick={()=>onDeletePosition(h.ticker)} title="Delete all trades for this ticker"
+                          style={{padding:"6px 10px",borderRadius:6,border:"1px solid "+C.red,background:"transparent",color:C.red,fontSize:12,cursor:"pointer",fontFamily:"inherit"}}>
+                          🗑
+                        </button>
                       </div>
                     </td>
                   </tr>
@@ -1127,6 +1135,7 @@ function Portfolio({portfolio,onAdd,onTrade,stocks}){
             }
           </tbody>
         </table>
+        </div>
       </div>
     </div>
   );
@@ -1167,12 +1176,12 @@ function Analytics({analytics,stocks}){
   return(
     <div>
       {/* Projections */}
-      <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:14,marginBottom:24}}>
+      <div className="stat-grid" style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:14,marginBottom:24}}>
         {(pj||[]).map(p=><Stat key={p.years} icon="🔮" label={p.years+"-Year Projection"} value={fmt.kes(p.projected_value)} sub={"@ "+fmt.pct(p.assumed_rate)+" p.a."} accent={C.green} topBorder={C.gold}/>)}
       </div>
 
       {/* Equity + monthly */}
-      <div style={{display:"grid",gridTemplateColumns:"2fr 1fr",gap:18,marginBottom:18}}>
+      <div className="stat-grid" style={{display:"grid",gridTemplateColumns:"2fr 1fr",gap:18,marginBottom:18}}>
         <div style={{background:C.surface,border:"1px solid "+C.borderGray,borderRadius:13,padding:22,boxShadow:"0 2px 12px #0000000A"}}>
           <div style={{fontSize:13,fontWeight:700,color:C.text,marginBottom:14}}>Portfolio Equity Curve</div>
           <LineChart data={(ec||[]).map(x=>({date:x.date,value:x.value}))} height={240}/>
@@ -1184,7 +1193,7 @@ function Analytics({analytics,stocks}){
       </div>
 
       {/* Best/worst + top5 + sector risk */}
-      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:18,marginBottom:18}}>
+      <div className="stat-grid" style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:18,marginBottom:18}}>
         {[{title:"🏆 Best Picks",col:C.green,data:bp,sign:"+"},{title:"📉 Worst Picks",col:C.red,data:wp,sign:""}].map(({title,col,data,sign})=>(
           <div key={title} style={{background:C.surface,border:"1px solid "+C.borderGray,borderRadius:13,padding:22,boxShadow:"0 2px 12px #0000000A"}}>
             <div style={{fontSize:10,color:col,textTransform:"uppercase",letterSpacing:"0.1em",fontWeight:700,marginBottom:13}}>{title}</div>
@@ -1223,7 +1232,7 @@ function Analytics({analytics,stocks}){
       {/* Exports */}
       <div style={{background:C.surface,border:"1px solid "+C.borderGray,borderRadius:13,padding:22,boxShadow:"0 2px 12px #0000000A"}}>
         <div style={{fontSize:10,color:C.green,textTransform:"uppercase",letterSpacing:"0.1em",fontWeight:700,marginBottom:13}}>⚙️ Stats & Exports</div>
-        <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:16}}>
+        <div className="stat-grid" style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:16}}>
           <div>
             <div style={{display:"flex",justifyContent:"space-between",padding:"9px 0",borderBottom:"1px solid "+C.borderGray,marginBottom:14}}><span style={{color:C.muted}}>Avg Holding Period</span><span style={{color:C.text,fontWeight:700}}>{ahd||"—"} days</span></div>
           </div>
@@ -1243,7 +1252,7 @@ function Analytics({analytics,stocks}){
             {accuracy?.total_recommendations_logged>0&&<div style={{marginTop:6}}>{accuracy.total_recommendations_logged} recommendation(s) logged, awaiting outcome data.</div>}
           </div>
         ):(
-          <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:12,marginBottom:16}}>
+          <div className="stat-grid" style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:12,marginBottom:16}}>
             <Stat icon="🎯" label="Buy Hit Rate" value={accuracy.buy_recommendation_hit_rate_pct!=null?accuracy.buy_recommendation_hit_rate_pct+"%":"—"} accent={accuracy.buy_recommendation_hit_rate_pct>50?C.green:C.red}/>
             <Stat icon="📊" label="Avg Return" value={accuracy.avg_return_pct+"%"} accent={accuracy.avg_return_pct>=0?C.green:C.red}/>
             <Stat icon="📈" label="Evaluated" value={accuracy.total_with_outcomes} accent={C.blue} sub={`of ${accuracy.total_recommendations_logged} logged`}/>
@@ -1254,7 +1263,7 @@ function Analytics({analytics,stocks}){
         {effectiveness&&(
           <div style={{marginTop:8}}>
             <div style={{fontSize:11,fontWeight:700,color:C.muted,marginBottom:8}}>COMPONENT EFFECTIVENESS (feeds adaptive weighting)</div>
-            <div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:8}}>
+            <div className="stat-grid" style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:8}}>
               {Object.entries(effectiveness.components||{}).map(([key,c])=>(
                 <div key={key} style={{border:"1px solid "+C.borderGray,borderRadius:8,padding:"10px 8px",textAlign:"center",opacity:c.reliable?1:0.55}}>
                   <div style={{fontSize:9,color:C.muted,fontWeight:700,textTransform:"uppercase",marginBottom:4}}>{key.replace("_score","").replace("_"," ")}</div>
@@ -1286,7 +1295,7 @@ function Watchlist({stocks,watchlist,onSelect,onTrade}){
           No stocks on watchlist yet.<br/>Open any stock and click "☆ Watch" to add it.
         </div>
       ):(
-        <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:14}}>
+        <div className="stat-grid" style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:14}}>
           {watched.map(s=>{
             const score=s.scores.total_score||0,c=sc60(score);
             const up=s.sparkline?.length>1&&s.sparkline[s.sparkline.length-1]>=s.sparkline[0];
@@ -1342,7 +1351,26 @@ function DataFreshness({onToast, focusTicker=null, focusField=null}){
   const [uploadingPrice, setUploadingPrice]   = useState(false);
   const [uploadingFund, setUploadingFund]     = useState(false);
   const [uploadResult, setUploadResult]       = useState(null);
+  const [updatingAll, setUpdatingAll]         = useState(false);
+  const [updateAllResult, setUpdateAllResult] = useState(null);
   const rowRefs = useRef({});
+
+  const handleUpdateAllData = async () => {
+    setUpdatingAll(true); setUpdateAllResult(null);
+    try{
+      const r = await post("/api/data/update-all", {});
+      setUpdateAllResult(r);
+      const improved = r.fundamentals?.tickers_improved || 0;
+      const derived = r.fundamentals?.fields_derived || 0;
+      const pricesAdded = r.prices?.total_added || 0;
+      onToast(`Update complete: ${pricesAdded} prices refreshed, ${improved} tickers improved, ${derived} fields derived`, "success");
+      load();
+    }catch(e){
+      onToast("Update failed: "+e.message, "error");
+    }
+    setUpdatingAll(false);
+  };
+
 
   const load = () => {
     setLoading(true);
@@ -1454,8 +1482,30 @@ function DataFreshness({onToast, focusTicker=null, focusField=null}){
 
   return(
     <div>
+      {/* ── Update Data button ── */}
+      <div style={{...card,marginBottom:20,display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:12}}>
+        <div>
+          <div style={{fontSize:14,fontWeight:800,color:C.text}}>Update Data</div>
+          <div style={{fontSize:11,color:C.muted,marginTop:2,maxWidth:480}}>
+            Pulls fresh prices and fundamentals from live sources for every tracked stock, keeps your existing good data wherever live sources have nothing, and fills remaining gaps using safe arithmetic (e.g. margin from net income ÷ revenue) — never invents a number that can't be traced back to something real. Can take up to a minute.
+          </div>
+        </div>
+        <button onClick={handleUpdateAllData} disabled={updatingAll}
+          style={{padding:"12px 24px",borderRadius:10,border:"2px solid "+C.green,background:updatingAll?C.greenLt:C.green,color:updatingAll?C.greenDk:"#fff",fontWeight:800,fontSize:13,cursor:updatingAll?"default":"pointer",fontFamily:"inherit",whiteSpace:"nowrap",opacity:updatingAll?0.7:1}}>
+          {updatingAll?"⏳ Updating...":"🔄 Update Data"}
+        </button>
+      </div>
+      {updateAllResult&&(
+        <div style={{...card,marginBottom:20,fontSize:12,color:C.textMid}}>
+          <div style={{fontWeight:700,marginBottom:6,color:C.text}}>Last update result</div>
+          <div>Prices: {updateAllResult.prices?.total_added ?? 0} tickers refreshed today, {updateAllResult.prices?.skipped_duplicate?.length ?? 0} already up to date</div>
+          <div>Fundamentals: {updateAllResult.fundamentals?.tickers_improved ?? 0} tickers improved, {updateAllResult.fundamentals?.fields_derived ?? 0} fields filled via derivation</div>
+          {updateAllResult.fundamentals?.errors?.length>0&&<div style={{color:C.orange,marginTop:4}}>{updateAllResult.fundamentals.errors.length} tickers had a live-fetch issue (existing data preserved, nothing lost)</div>}
+        </div>
+      )}
+
       {/* ── Two upload panels ── */}
-      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16,marginBottom:20}}>
+      <div className="stat-grid" style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16,marginBottom:20}}>
 
         {/* Prices */}
         <div style={{...card,border:"1.5px solid "+C.borderGray}}>
@@ -1570,7 +1620,7 @@ function DataFreshness({onToast, focusTicker=null, focusField=null}){
       )}
 
       {/* Summary cards */}
-      <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:12,marginBottom:20}}>
+      <div className="stat-grid" style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:12,marginBottom:20}}>
         {[
           {l:"Fresh (< 7d)",  v:summary.fresh,  c:C.green,  f:"all"},
           {l:"Stale (7-14d)", v:summary.stale,  c:C.orange, f:"nodata"},
@@ -1729,7 +1779,7 @@ function DataFreshness({onToast, focusTicker=null, focusField=null}){
       {/* How-to */}
       <div style={{...card,marginTop:16,background:"#f8faff",border:"1px solid "+C.blueLt}}>
         <div style={{fontSize:12,fontWeight:700,color:C.blue,marginBottom:10}}>How to update your data</div>
-        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16,fontSize:11,color:C.textMid}}>
+        <div className="stat-grid" style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16,fontSize:11,color:C.textMid}}>
           <div style={{background:"#fff",borderRadius:9,padding:14,border:"1px solid "+C.borderGray}}>
             <div style={{fontWeight:700,color:C.green,marginBottom:6}}>Prices — update weekly</div>
             <div style={{marginBottom:3}}>1. Click <strong>Download Price Template</strong> above</div>
@@ -1809,7 +1859,7 @@ function MacroIntelligence({onToast}){
                 ⚠️ {g.data_quality_warning}
               </div>
             )}
-            <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:12,marginBottom:18}}>
+            <div className="stat-grid" style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:12,marginBottom:18}}>
               <Stat icon="📐" label="Economic Regime" value={g.economic_regime} accent={C.blue} span={2}/>
               <Stat icon="⚠️" label="Global Risk Score" value={g.global_risk_score!=null?g.global_risk_score+"/100":"—"}
                 accent={g.global_risk_score>60?C.red:g.global_risk_score>35?C.yellow:C.green}
@@ -1818,7 +1868,7 @@ function MacroIntelligence({onToast}){
 
             <IntelCard title="FRED Macro Indicators">
               {!g.fred_configured?<Unavailable reason="FRED_API_KEY not set on the server — set it as an environment variable to enable rates/inflation/GDP/PMI data."/>:(
-                <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:12}}>
+                <div className="stat-grid" style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:12}}>
                   {Object.entries(g.indicators||{}).map(([code,ind])=>(
                     <Stat key={code} icon="📊" label={ind.label||code}
                       value={ind.value!=null?ind.value+(ind.units?.includes("%")?"%":""):"—"}
@@ -1831,7 +1881,7 @@ function MacroIntelligence({onToast}){
 
             <div style={{height:18}}/>
             <IntelCard title="Market Signals (Commodities / VIX / DXY)">
-              <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:12}}>
+              <div className="stat-grid" style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:12}}>
                 {Object.entries(g.market_signals||{}).map(([key,m])=>(
                   <Stat key={key} icon="📈" label={key.replace(/_/g," ").toUpperCase()}
                     value={m.value!=null?fmt.num(m.value):"—"}
@@ -1861,10 +1911,10 @@ function MacroIntelligence({onToast}){
               </div>
             </IntelCard>
             <div style={{height:18}}/>
-            <div style={{display:"grid",gridTemplateColumns:"repeat(2,1fr)",gap:18}}>
+            <div className="stat-grid" style={{display:"grid",gridTemplateColumns:"repeat(2,1fr)",gap:18}}>
               {Object.values(c.countries||{}).map(p=>(
                 <IntelCard key={p.country_code} title={`${p.country_name} — ${p.outlook}`}>
-                  <div style={{display:"grid",gridTemplateColumns:"repeat(2,1fr)",gap:10,marginBottom:10}}>
+                  <div className="stat-grid" style={{display:"grid",gridTemplateColumns:"repeat(2,1fr)",gap:10,marginBottom:10}}>
                     {Object.values(p.indicators||{}).map((ind,i)=>(
                       <div key={i}>
                         <div style={{fontSize:10,color:C.muted}}>{ind.label}</div>
@@ -1895,7 +1945,7 @@ function MacroIntelligence({onToast}){
                     <div><b style={{color:C.green}}>Preferred:</b> {gsr.preferred_sectors?.join(", ")}</div>
                     <div><b style={{color:C.red}}>Avoided:</b> {gsr.avoided_sectors?.join(", ")}</div>
                   </div>
-                  <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:10}}>
+                  <div className="stat-grid" style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:10}}>
                     {Object.entries(gsr.sectors||{}).map(([name,d])=>(
                       <div key={name} style={{padding:"10px 12px",border:"1px solid "+C.borderGray,borderRadius:8}}>
                         <div style={{fontSize:11,fontWeight:700,color:C.text}}>{name}</div>
@@ -2015,6 +2065,15 @@ export default function App(){
     setModal(null);
   };
 
+  const handleDeletePosition=async(ticker)=>{
+    if(!window.confirm(`Delete ALL trades for ${ticker}? This cannot be undone.`))return;
+    try{
+      const r=await del("/api/trades/ticker/"+encodeURIComponent(ticker));
+      setPortfolio(r);
+      showToast(ticker+" position deleted","success");
+    }catch(e){showToast("Delete failed: "+e.message,"error");}
+  };
+
   const goTo=(id)=>{setPage(id);setSelected(null);setSidebarOpen(false);};
   const openStock=useCallback((s)=>{setSelected(s.ticker);setPage("detail");},[]);
   const openTrade=(ticker,type)=>setModal({ticker,type});
@@ -2049,6 +2108,11 @@ export default function App(){
           .topbar-title{font-size:15px!important;}
           .topbar-pad{padding:10px 14px!important;}
           .log-trade-btn{padding:8px 12px!important;font-size:11px!important;}
+          .stat-grid{grid-template-columns:repeat(2,1fr)!important;}
+          .resp-table-wrap{overflow-x:auto!important;-webkit-overflow-scrolling:touch;}
+        }
+        @media(max-width:480px){
+          .stat-grid{grid-template-columns:1fr!important;}
         }
         @media(min-width:769px){
           .sidebar-mobile{display:none!important;}
@@ -2156,7 +2220,7 @@ export default function App(){
                 )}
               </button>
               {showAlerts&&(
-                <div style={{position:"absolute",right:0,top:"110%",width:320,background:C.surface,border:"1px solid "+C.borderGray,borderRadius:12,boxShadow:"0 8px 32px #00000018",zIndex:100,maxHeight:400,overflowY:"auto"}}>
+                <div style={{position:"absolute",right:0,top:"110%",width:"min(320px, 88vw)",background:C.surface,border:"1px solid "+C.borderGray,borderRadius:12,boxShadow:"0 8px 32px #00000018",zIndex:100,maxHeight:400,overflowY:"auto"}}>
                   <div style={{padding:"12px 16px",borderBottom:"1px solid "+C.borderGray,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
                     <span style={{fontWeight:700,fontSize:13,color:C.text}}>Data Health Alerts</span>
                     <button onClick={()=>setShowAlerts(false)} style={{background:"none",border:"none",cursor:"pointer",fontSize:16,color:C.muted}}>✕</button>
@@ -2209,7 +2273,7 @@ export default function App(){
               {page==="dashboard" && <Dashboard  stocks={stocks} portfolio={portfolio} onSelect={openStock} onTrade={openTrade}/>}
               {page==="screener"  && <Screener   stocks={stocks} sectors={sectors}     onSelect={openStock} onTrade={openTrade}/>}
               {page==="watchlist" && <Watchlist  stocks={stocks} watchlist={watchlist}  onSelect={openStock} onTrade={openTrade}/>}
-              {page==="portfolio" && <Portfolio  portfolio={portfolio} onAdd={()=>setModal({ticker:"",type:"BUY"})} onTrade={openTrade} stocks={stocks}/>}
+              {page==="portfolio" && <Portfolio  portfolio={portfolio} onAdd={()=>setModal({ticker:"",type:"BUY"})} onTrade={openTrade} onDeletePosition={handleDeletePosition} stocks={stocks}/>}
               {page==="analytics" && <Analytics  analytics={analytics} stocks={stocks}/>}
               {page==="macro"     && <MacroIntelligence onToast={showToast}/>}
               {page==="detail"&&selected && <StockDetail ticker={selected} onBack={()=>setPage("screener")} onTrade={openTrade} tickers={tickers} onToast={showToast}/>}

@@ -180,6 +180,68 @@ def _safe_float(v) -> Optional[float]:
         return None
 
 
+def _derive_fundamentals_row(fund: dict) -> tuple:
+    """
+    Fills gaps in a single fundamentals row using ONLY arithmetic on
+    other real values already present in that same row — never
+    invents a number from nothing. Mirrors the exact formulas used in
+    the manually-researched NSE data sourcing report:
+      margin = net_income / revenue
+      eps = price / pe  (or the reverse: pe = price / eps)
+      dividend_yield = dividends / price  (or the reverse)
+
+    A negative or nonsensical result (e.g. negative P/E for a
+    loss-making company) is left blank rather than shown as a
+    misleading number — same judgment call documented in that report
+    for BAMB/FTGH. Returns (row_with_derived_fields, list_of_field_
+    names_that_were_derived) so the caller can log/audit exactly what
+    changed and why.
+    """
+    fund = dict(fund)
+    derived = []
+
+    price          = _safe_float(fund.get("price"))
+    eps            = _safe_float(fund.get("eps"))
+    pe             = _safe_float(fund.get("pe"))
+    revenue        = _safe_float(fund.get("revenue"))
+    net_income     = _safe_float(fund.get("net_income"))
+    dividends      = _safe_float(fund.get("dividends"))
+    dividend_yield = _safe_float(fund.get("dividend_yield"))
+
+    def _is_missing(key):
+        v = fund.get(key)
+        return v is None or v == "" or v == []
+
+    if _is_missing("margin") and net_income is not None and revenue and revenue > 0:
+        fund["margin"] = round(net_income / revenue, 4)
+        derived.append("margin")
+
+    if _is_missing("eps") and price and pe and pe > 0:
+        fund["eps"] = round(price / pe, 4)
+        derived.append("eps")
+    elif _is_missing("pe") and price and eps and eps > 0:
+        computed_pe = round(price / eps, 2)
+        if computed_pe > 0:  # negative P/E isn't a meaningful multiple - leave blank, don't mislead
+            fund["pe"] = computed_pe
+            derived.append("pe")
+
+    if _is_missing("dividend_yield") and price and price > 0 and dividends is not None:
+        computed_yield = round(dividends / price, 4)
+        if 0 <= computed_yield <= 1:  # >100% yield is almost certainly a data error, not a real figure
+            fund["dividend_yield"] = computed_yield
+            derived.append("dividend_yield")
+    elif _is_missing("dividends") and price and dividend_yield is not None:
+        fund["dividends"] = round(dividend_yield * price, 4)
+        derived.append("dividends")
+
+    if derived:
+        existing_source = (fund.get("data_source") or "").strip()
+        note = f"derived this update: {', '.join(derived)}"
+        fund["data_source"] = f"{existing_source} || {note}" if existing_source else note
+
+    return fund, derived
+
+
 def _parse_history(val) -> list:
     if not val or str(val).strip() in ("", "nan", "none"):
         return []
@@ -260,45 +322,59 @@ def generate_fundamentals_template(tickers: list, seed: dict) -> str:
     def fmt_history(arr):
         return ";".join(str(v) for v in arr) if arr else ""
 
-    def pick(live, sd, field, default=""):
-        """Live scraper wins, then seed, then default (empty = red cell)."""
-        v = live.get(field)
-        if v is not None and v != "" and v != []:
-            return v
-        v = sd.get(field)
-        if v is not None and v != "" and v != []:
-            return v
+    def pick(live, uploaded, sd, field, default=""):
+        """Priority: live scraper (freshest) > your uploaded real data
+        (authoritative once you've provided it) > old seed JSON (last
+        resort only, may be stale/placeholder) > default/empty (red
+        cell). `sd` is passed in as {} by the caller whenever this
+        ticker already has any real uploaded data - see the loop
+        below for why that matters."""
+        for source in (live, uploaded, sd):
+            v = source.get(field)
+            if v is not None and v != "" and v != []:
+                return v
         return default
 
     rows = []
     today = datetime.now().strftime("%Y-%m-%d")
+    manager = get_manager()
     for t in tickers:
         base = t["ticker"].split(".")[0].upper()
         lv = live_funds.get(base, {})
-        sd = seed.get(base, {})
+        up = manager._fundamentals.get(base, {})
+        # If this ticker already has ANY real uploaded data, seed is
+        # excluded entirely for it - not just for individually-empty
+        # fields. Otherwise a downloaded template could show old fake
+        # seed numbers (e.g. a fabricated net_income_history) sitting
+        # next to real EPS/PE data, and a careless re-upload of that
+        # template would silently reintroduce exactly the fake-data
+        # contamination bug already found and fixed in
+        # get_fundamentals() and upload_fundamentals() - just via a
+        # different door.
+        sd = seed.get(base, {}) if not up else {}
 
         rows.append({
             "ticker":             base,
-            "eps":                pick(lv, sd, "eps"),
-            "bvps":               pick(lv, sd, "bvps"),
-            "pe":                 pick(lv, sd, "pe"),
-            "pb":                 pick(lv, sd, "pb"),
-            "roe":                pick(lv, sd, "roe"),
-            "margin":             pick(lv, sd, "margin"),
-            "dividends":          pick(lv, sd, "dividends"),
-            "dividend_yield":     pick(lv, sd, "dividend_yield"),
-            "market_cap":         pick(lv, sd, "market_cap"),
-            "total_assets":       pick(lv, sd, "total_assets"),
-            "debt_to_equity":     pick(lv, sd, "debt_to_equity"),
-            "interest_coverage":  pick(lv, sd, "interest_coverage"),
-            "revenue":            pick(lv, sd, "revenue"),
-            "net_income":         pick(lv, sd, "net_income"),
-            "revenue_history":    fmt_history(pick(lv, sd, "revenue_history", [])),
-            "net_income_history": fmt_history(pick(lv, sd, "net_income_history", [])),
-            "dps_history":        fmt_history(pick(lv, sd, "dps_history", [])),
-            "data_source":        pick(lv, sd, "data_source", ""),
-            "fiscal_year":        pick(lv, sd, "fiscal_year", "2024"),
-            "last_update":        pick(lv, sd, "last_update", today),
+            "eps":                pick(lv, up, sd, "eps"),
+            "bvps":               pick(lv, up, sd, "bvps"),
+            "pe":                 pick(lv, up, sd, "pe"),
+            "pb":                 pick(lv, up, sd, "pb"),
+            "roe":                pick(lv, up, sd, "roe"),
+            "margin":             pick(lv, up, sd, "margin"),
+            "dividends":          pick(lv, up, sd, "dividends"),
+            "dividend_yield":     pick(lv, up, sd, "dividend_yield"),
+            "market_cap":         pick(lv, up, sd, "market_cap"),
+            "total_assets":       pick(lv, up, sd, "total_assets"),
+            "debt_to_equity":     pick(lv, up, sd, "debt_to_equity"),
+            "interest_coverage":  pick(lv, up, sd, "interest_coverage"),
+            "revenue":            pick(lv, up, sd, "revenue"),
+            "net_income":         pick(lv, up, sd, "net_income"),
+            "revenue_history":    fmt_history(pick(lv, up, sd, "revenue_history", [])),
+            "net_income_history": fmt_history(pick(lv, up, sd, "net_income_history", [])),
+            "dps_history":        fmt_history(pick(lv, up, sd, "dps_history", [])),
+            "data_source":        pick(lv, up, sd, "data_source", ""),
+            "fiscal_year":        pick(lv, up, sd, "fiscal_year", "2024"),
+            "last_update":        pick(lv, up, sd, "last_update", today),
         })
 
     out = io.StringIO()
@@ -613,19 +689,18 @@ class CSVDataManager:
         with _mem_lock:
             for fund in rows:
                 t = fund["ticker"]
-                merged = dict(self._fundamentals.get(t, {}))
-                for k, v in fund.items():
-                    if k == "ticker":
-                        merged[k] = v
-                    elif k in ["revenue_history", "net_income_history", "dps_history"]:
-                        if isinstance(v, list) and v:
-                            merged[k] = v
-                    elif v is not None and v != "" and v != []:
-                        merged[k] = v
-                merged["uploaded_at"] = uploaded_at
-                merged["data_stale"]  = False
-                merged["fetch_ok"]    = True
-                self._fundamentals[t] = merged
+                # REPLACE wholesale, not merge - an upload is the
+                # authoritative statement of this ticker's current
+                # fundamentals. Merging with whatever was previously
+                # stored let stale/contaminating data survive
+                # indefinitely (a genuinely-empty real field could
+                # never overwrite an old fake one under the previous
+                # "only overwrite if non-empty" merge rule) - a real
+                # data-integrity bug found via an actual end-to-end
+                # test with real uploaded data, not a hypothetical.
+                fund["uploaded_at"] = uploaded_at
+                fund["fetch_ok"]    = True
+                self._fundamentals[t] = fund
                 updated.append(t)
 
             self._meta.update({
@@ -687,14 +762,22 @@ class CSVDataManager:
         if not uploaded and not seed_entry:
             return self._empty(ticker)
 
-        merged = dict(seed_entry)
-        for k, v in uploaded.items():
-            if k in ["revenue_history", "net_income_history", "dps_history"]:
-                if isinstance(v, list) and v:
-                    merged[k] = v
-            elif v is not None and v != "" and v != []:
-                merged[k] = v
-        return merged
+        # DATA INTEGRITY: once real data has been uploaded for this
+        # ticker, seed/placeholder data must never contaminate it again
+        # - not even to "fill gaps." The old logic started from seed
+        # data as the base and only overwrote history-array fields if
+        # the upload had a non-empty list, which meant an honestly
+        # empty history array (correctly reporting "we don't have
+        # this") would silently leave fabricated seed numbers in
+        # place underneath - and those fake numbers would then flow
+        # into DCF/valuation as if real, with no indication to the
+        # user. A ticker with ANY real upload now uses ONLY that real
+        # data; missing fields stay honestly missing (None/[]) rather
+        # than being quietly patched from a placeholder.
+        if uploaded:
+            return uploaded
+
+        return dict(seed_entry)
 
     def _empty(self, ticker: str) -> dict:
         return {
@@ -963,6 +1046,123 @@ class CSVDataManager:
             "skipped_duplicate": skipped_duplicate,
             "total_added": len(added),
         }
+
+    def refresh_all_data(self, tickers: list) -> dict:
+        """
+        The 'Update Data' button's backend — a full, on-demand data
+        refresh across both prices and fundamentals, for every
+        tracked ticker. Runs the SAME logic that would otherwise wait
+        for the daily background snapshot, on demand.
+
+        Consistency / accuracy / integrity, concretely:
+          - Live-scraped data wins when it returns something real,
+            because it's the freshest source available.
+          - A ticker's EXISTING value is preserved whenever live has
+            nothing for that field — this refresh only ever adds or
+            improves data, it never regresses good data to blank.
+          - Missing fields are derived ONLY from other real values
+            already present in that same ticker's row (the same
+            formulas used in the manually-researched NSE data
+            sourcing report: margin = net_income/revenue, eps=price/pe
+            or pe=price/eps, dividend_yield=dividends/price or the
+            reverse). A derived value is real arithmetic on real
+            numbers, never a fabricated placeholder — a field with no
+            real number anywhere to derive it from stays honestly
+            empty.
+          - Every derived field is recorded in that row's data_source
+            note, so it's always traceable which numbers are directly
+            sourced vs computed — full audit trail, not a black box.
+        """
+        from services.nse_scraper import get_all_prices, get_fundamentals as scraper_get_fundamentals
+
+        report = {
+            "started_at": datetime.now().isoformat(),
+            "prices": None,
+            "fundamentals": {"tickers_improved": 0, "fields_derived": 0, "errors": []},
+        }
+
+        # Prices — reuses the already-tested-safe snapshot mechanism,
+        # just triggered on demand instead of waiting for the 24h timer.
+        try:
+            live_prices = get_all_prices()
+            report["prices"] = self.snapshot_daily_prices(live_prices)
+        except Exception as e:
+            report["prices"] = {"available": False, "reason": str(e)}
+
+        with _mem_lock:
+            current_prices = dict(self._prices)
+
+        tickers_improved = 0
+        fields_derived_total = 0
+
+        for t in tickers:
+            base = t["ticker"].split(".")[0].upper()
+            try:
+                live = scraper_get_fundamentals(base) or {}
+                # The scraper's own Tier-3 fallback returns old,
+                # possibly-fabricated placeholder data tagged
+                # data_source="seed_fy2024" when live scraping fails -
+                # never treat that as fresh live data. Doing so would
+                # silently reintroduce exactly the fake-data
+                # contamination already found and fixed twice
+                # elsewhere in this codebase, just through a third
+                # path. Only a genuine live scrape should ever
+                # override existing real data here.
+                if live.get("data_source") == "seed_fy2024":
+                    live = {}
+            except Exception as e:
+                live = {}
+                report["fundamentals"]["errors"].append(f"{base}: live fetch failed ({e})")
+
+            with _mem_lock:
+                existing = dict(self._fundamentals.get(base, {}))
+
+            merged = dict(existing)
+            live_fields_applied = []
+            for k, v in live.items():
+                if v is not None and v != "" and v != []:
+                    if existing.get(k) != v:
+                        live_fields_applied.append(k)
+                    merged[k] = v  # freshest real data wins
+
+            price_row = current_prices.get(base, {})
+            merged["price"] = _safe_float(price_row.get("price"))
+
+            derived_row, derived_fields = _derive_fundamentals_row(merged)
+            derived_row.pop("price", None)  # price lives in its own table, not stored inside fundamentals
+
+            # A ticker only counts as "improved" if something SUBSTANTIVE
+            # actually changed - a genuinely new live value, or a field
+            # that was successfully derived. Not a blunt whole-dict
+            # equality check, which can be tripped by incidental
+            # representation differences (e.g. field ordering, type
+            # round-tripping) that don't reflect any real data change -
+            # that would silently overcount "improvements" and bump
+            # last_update timestamps for tickers where nothing actually
+            # happened, misleading anyone auditing what this update did.
+            if live_fields_applied or derived_fields:
+                derived_row["last_update"] = datetime.now().strftime("%Y-%m-%d")
+                derived_row["fetch_ok"] = True
+                derived_row["ticker"] = base
+                with _mem_lock:
+                    self._fundamentals[base] = derived_row
+                tickers_improved += 1
+                fields_derived_total += len(derived_fields)
+
+        with _mem_lock:
+            self._meta.update({
+                "last_full_data_update": datetime.now().isoformat(),
+                "fundamentals_ticker_count": len(self._fundamentals),
+            })
+            fundamentals_snap = dict(self._fundamentals)
+            meta_snap = dict(self._meta)
+
+        self._persist_fundamentals(fundamentals_snap, meta_snap)
+
+        report["fundamentals"]["tickers_improved"] = tickers_improved
+        report["fundamentals"]["fields_derived"] = fields_derived_total
+        report["completed_at"] = datetime.now().isoformat()
+        return report
 
 
 # ── Thread-safe singleton ─────────────────────────────────────────────────────

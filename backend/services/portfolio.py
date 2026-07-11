@@ -51,6 +51,32 @@ class PortfolioManager:
     def get_all_trades(self) -> list:
         return _load_trades().to_dict(orient="records")
 
+    def delete_trade(self, trade_id: str) -> dict:
+        """Remove a single trade by its ID - for correcting a
+        mis-entered trade or clearing a stuck/erroneous record
+        without having to touch the CSV file by hand."""
+        df = _load_trades()
+        if df.empty or trade_id not in df["trade_id"].values:
+            return {"success": False, "reason": f"No trade found with id {trade_id}"}
+        df = df[df["trade_id"] != trade_id]
+        _save_trades(df)
+        return {"success": True, "deleted_trade_id": trade_id}
+
+    def delete_all_trades_for_ticker(self, ticker: str) -> dict:
+        """Remove every trade for a given ticker in one action - for
+        when a ticker's whole position is wrong (e.g. entered under
+        the wrong symbol) and needs a clean restart rather than
+        deleting rows one at a time."""
+        ticker = ticker.upper()
+        df = _load_trades()
+        if df.empty:
+            return {"success": True, "deleted_count": 0}
+        before = len(df)
+        df = df[df["ticker"] != ticker]
+        deleted_count = before - len(df)
+        _save_trades(df)
+        return {"success": True, "deleted_count": deleted_count, "ticker": ticker}
+
     def _compute_positions(self) -> dict:
         df = _load_trades()
         if df.empty:

@@ -4,7 +4,7 @@ Manual CSV data uploads. No scraping. No external APIs.
 """
 
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, UploadFile, File, Response
+from fastapi import FastAPI, HTTPException, UploadFile, File, Response, Header, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -33,6 +33,7 @@ from services.continuous_learning import (
     log_recommendation, record_outcome, get_recommendation_history, get_accuracy_stats,
     get_component_effectiveness,
 )
+import services.auth as auth
 
 # ── Keep-alive: robust external ping via UptimeRobot or self-ping ──────────
 def _app_base_path() -> Path:
@@ -297,6 +298,25 @@ class ManualFundamentalRequest(BaseModel):
     value: float
 
 
+class SecurityQuestionInput(BaseModel):
+    question: str
+    answer: str
+
+class RegisterRequest(BaseModel):
+    username: str
+    password: str
+    security_questions: list[SecurityQuestionInput]
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+class ResetPasswordRequest(BaseModel):
+    username: str
+    answers: list[str]
+    new_password: str
+
+
 # ── Health & keep-alive ────────────────────────────────────────────────────
 
 @app.get("/")
@@ -374,6 +394,109 @@ def check_for_update():
             "update_available": None,
             "detail": f"Could not reach GitHub to check for updates: {e}",
         }
+
+
+def get_current_user(authorization: Optional[str] = Header(None)) -> str:
+    """
+    FastAPI dependency for protecting a route: require a valid
+    session token in the Authorization header ("Bearer <token>").
+    Raises 401 if missing/invalid/expired. Use via:
+        def my_route(user: str = Depends(get_current_user)):
+    """
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Not authenticated - missing session token")
+    token = authorization[len("Bearer "):].strip()
+    result = auth.verify_session(token)
+    if not result["valid"]:
+        raise HTTPException(status_code=401, detail=result["reason"])
+    return result["username"]
+
+
+@app.get("/api/auth/status")
+def auth_status():
+    """Tells the frontend whether any account exists yet, so it knows
+    whether to show 'Register' (first run) or 'Login' as the primary
+    action."""
+    return {"any_users_exist": auth.any_users_exist()}
+
+
+@app.post("/api/auth/register")
+def auth_register(req: RegisterRequest):
+    try:
+        result = auth.register(
+            req.username, req.password,
+            [{"question": q.question, "answer": q.answer} for q in req.security_questions],
+        )
+        if not result.get("success"):
+            raise HTTPException(status_code=400, detail=result.get("reason"))
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/auth/login")
+def auth_login(req: LoginRequest):
+    try:
+        result = auth.login(req.username, req.password)
+        if not result.get("success"):
+            raise HTTPException(status_code=401, detail=result.get("reason"))
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/auth/logout")
+def auth_logout(authorization: Optional[str] = Header(None)):
+    try:
+        if authorization and authorization.startswith("Bearer "):
+            token = authorization[len("Bearer "):].strip()
+            auth.logout(token)
+        return {"success": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/auth/me")
+def auth_me(user: str = Depends(get_current_user)):
+    """Confirms the current session is valid and returns who it
+    belongs to - the frontend calls this on load to decide whether to
+    show the app or the login screen."""
+    return {"username": user}
+
+
+@app.get("/api/auth/security-questions/{username}")
+def auth_get_security_questions(username: str):
+    """Step 1 of forgot-password: get the questions to answer (never
+    the answers themselves)."""
+    try:
+        result = auth.get_security_questions(username)
+        if not result.get("success"):
+            raise HTTPException(status_code=404, detail=result.get("reason"))
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/auth/reset-password")
+def auth_reset_password(req: ResetPasswordRequest):
+    """Step 2 of forgot-password: submit answers + a new password.
+    Getting ANY ONE of the security questions right is enough to
+    unlock the reset."""
+    try:
+        result = auth.reset_password(req.username, req.answers, req.new_password)
+        if not result.get("success"):
+            raise HTTPException(status_code=400, detail=result.get("reason"))
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/ping")
@@ -476,11 +599,11 @@ def system_status():
 # ── Tickers & Sectors ──────────────────────────────────────────────────────
 
 @app.get("/api/tickers")
-def get_tickers():
+def get_tickers(user: str = Depends(get_current_user)):
     return {"tickers": NSE_TICKERS}
 
 @app.get("/api/sectors")
-def get_sectors():
+def get_sectors(user: str = Depends(get_current_user)):
     sectors = sorted(set(t["sector"] for t in NSE_TICKERS))
     return {"sectors": sectors}
 
@@ -488,7 +611,7 @@ def get_sectors():
 # ── Stocks ─────────────────────────────────────────────────────────────────
 
 @app.get("/api/stocks")
-def get_stocks(sector: str = "", sort: str = "score"):
+def get_stocks(sector: str = "", sort: str = "score", user: str = Depends(get_current_user)):
     global _score_cache
     tickers = NSE_TICKERS
     if sector:
@@ -549,7 +672,7 @@ def get_stocks(sector: str = "", sort: str = "score"):
 
 
 @app.get("/api/stock/{ticker}/recommendation")
-def get_stock_recommendation(ticker: str):
+def get_stock_recommendation(ticker: str, user: str = Depends(get_current_user)):
     """Layer 10 — AI Recommendation Engine. Synthesizes company score
     (Layer 5), valuation (Layer 6), technical (Layer 8), capital flow
     (Layer 7), and NSE sector momentum (Layer 3/4) into one transparent,
@@ -607,7 +730,7 @@ def get_stock_recommendation(ticker: str):
 
 
 @app.get("/api/stock/{ticker_raw:path}")
-def get_stock(ticker_raw: str):
+def get_stock(ticker_raw: str, user: str = Depends(get_current_user)):
     try:
         ticker = ticker_raw.upper()
         if "." not in ticker:
@@ -708,7 +831,7 @@ def get_stock(ticker_raw: str):
 # ── CSV Upload endpoints ───────────────────────────────────────────────────
 
 @app.get("/api/template/prices")
-def download_price_template():
+def download_price_template(user: str = Depends(get_current_user)):
     """Download CSV template for price upload — all NSE tickers pre-filled."""
     csv_content = generate_price_template(NSE_TICKERS)
     return Response(
@@ -717,8 +840,29 @@ def download_price_template():
         headers={"Content-Disposition": "attachment; filename=nse_prices_template.csv"}
     )
 
+@app.post("/api/data/update-all")
+def update_all_data(user: str = Depends(get_current_user)):
+    """
+    The 'Update Data' button. Triggers a full refresh across both
+    prices and fundamentals for every tracked ticker: live sources
+    first, existing good data preserved wherever live has nothing,
+    and any remaining gaps filled by safe cross-field derivation
+    (never fabricated from nothing - see
+    CSVDataManager.refresh_all_data / _derive_fundamentals_row for
+    the exact rules). This can take a while (up to ~1 minute for the
+    full ticker universe, since it attempts a live fetch per ticker)
+    - the frontend should show a loading state, not assume this
+    returns instantly.
+    """
+    try:
+        report = get_manager().refresh_all_data(NSE_TICKERS)
+        return report
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/api/template/fundamentals")
-def download_fundamentals_template():
+def download_fundamentals_template(user: str = Depends(get_current_user)):
     """Download CSV template for fundamentals — pre-filled from seed data."""
     from services.data_loader import _load_seed
     seed = _load_seed()
@@ -730,7 +874,7 @@ def download_fundamentals_template():
     )
 
 @app.post("/api/upload/prices")
-async def upload_prices(file: UploadFile = File(...)):
+async def upload_prices(file: UploadFile = File(...), user: str = Depends(get_current_user)):
     """
     Upload price CSV.
     - Must have columns: ticker, date, close (open/high/low/volume optional)
@@ -750,7 +894,7 @@ async def upload_prices(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/upload/fundamentals")
-async def upload_fundamentals(file: UploadFile = File(...)):
+async def upload_fundamentals(file: UploadFile = File(...), user: str = Depends(get_current_user)):
     """
     Upload fundamentals CSV.
     - Must have: ticker + at least one of eps/pe/roe/bvps
@@ -770,7 +914,7 @@ async def upload_fundamentals(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/upload/status")
-def upload_status():
+def upload_status(user: str = Depends(get_current_user)):
     """Returns metadata about last uploads — timestamps, counts, staleness."""
     mgr = get_manager()
     meta = mgr.get_upload_meta()
@@ -795,14 +939,14 @@ def upload_status():
 # ── Data freshness & health ────────────────────────────────────────────────
 
 @app.get("/api/data-freshness")
-def data_freshness():
+def data_freshness(user: str = Depends(get_current_user)):
     try:
         return {"freshness": loader.get_data_freshness(NSE_TICKERS)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/data-health")
-def data_health():
+def data_health(user: str = Depends(get_current_user)):
     """Returns actionable alerts for the notification bell."""
     try:
         mgr = get_manager()
@@ -812,7 +956,7 @@ def data_health():
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/data-sources")
-def data_sources():
+def data_sources(user: str = Depends(get_current_user)):
     """Returns current data source info."""
     try:
         mgr = get_manager()
@@ -831,7 +975,7 @@ def data_sources():
 # ── Manual single-field entry (existing feature) ──────────────────────────
 
 @app.post("/api/missing-data")
-def save_missing_data(req: MissingDataRequest):
+def save_missing_data(req: MissingDataRequest, user: str = Depends(get_current_user)):
     try:
         ticker = req.ticker.upper()
         try:
@@ -848,7 +992,7 @@ def save_missing_data(req: MissingDataRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/manual-price")
-def manual_price(req: ManualPriceRequest):
+def manual_price(req: ManualPriceRequest, user: str = Depends(get_current_user)):
     """Set a single ticker's price manually."""
     try:
         from io import BytesIO
@@ -863,7 +1007,7 @@ def manual_price(req: ManualPriceRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/manual-fundamental")
-def manual_fundamental(req: ManualFundamentalRequest):
+def manual_fundamental(req: ManualFundamentalRequest, user: str = Depends(get_current_user)):
     """Set a single fundamental field for a ticker."""
     try:
         ticker = req.ticker.upper().split(".")[0]
@@ -982,7 +1126,7 @@ def _build_benchmark_basket() -> list:
 
 
 @app.get("/api/portfolio")
-def get_portfolio():
+def get_portfolio(user: str = Depends(get_current_user)):
     try:
         return _enrich(portfolio.get_summary(loader))
     except Exception as e:
@@ -999,7 +1143,7 @@ _LAYER_CACHE_TTL = 1800  # 30 min
 
 
 @app.get("/api/intelligence/global")
-def get_global_layer():
+def get_global_layer(user: str = Depends(get_current_user)):
     """Layer 1 — Global Intelligence Engine (FRED + stooq)."""
     now = time.time()
     if _layer1234_cache["global"] and (now - _layer1234_cache["global_ts"]) < _LAYER_CACHE_TTL:
@@ -1014,7 +1158,7 @@ def get_global_layer():
 
 
 @app.get("/api/intelligence/country")
-def get_country_layer(countries: str = None):
+def get_country_layer(countries: str = None, user: str = Depends(get_current_user)):
     """Layer 2 — Country Intelligence Engine (World Bank).
     Optional ?countries=KEN,USA,GBR to override the default tracked list."""
     codes = [c.strip().upper() for c in countries.split(",")] if countries else None
@@ -1034,7 +1178,7 @@ def get_country_layer(countries: str = None):
 
 
 @app.get("/api/intelligence/sector")
-def get_sector_layer():
+def get_sector_layer(user: str = Depends(get_current_user)):
     """Layers 3+4 — Sector + Industry Intelligence (global ETF rotation
     via stooq, plus NSE-local sector momentum from your own price data)."""
     now = time.time()
@@ -1050,7 +1194,7 @@ def get_sector_layer():
 
 
 @app.get("/api/portfolio/risk")
-def get_portfolio_risk():
+def get_portfolio_risk(user: str = Depends(get_current_user)):
     """Layer 9 (Risk) + Layer 11 (Portfolio Intelligence):
     Sharpe, Sortino, max drawdown, beta, correlation matrix,
     diversification (HHI), and portfolio health score."""
@@ -1086,7 +1230,7 @@ def get_portfolio_risk():
 
 
 @app.post("/api/recommendations/log")
-def log_recommendation_endpoint(ticker: str):
+def log_recommendation_endpoint(ticker: str, user: str = Depends(get_current_user)):
     """Layer 12 — snapshot a Layer 10 recommendation for future outcome tracking."""
     try:
         rec = get_stock_recommendation(ticker)
@@ -1112,7 +1256,7 @@ def log_recommendation_endpoint(ticker: str):
 
 
 @app.post("/api/recommendations/{recommendation_id}/outcome")
-def record_recommendation_outcome(recommendation_id: str, current_price: float):
+def record_recommendation_outcome(recommendation_id: str, current_price: float, user: str = Depends(get_current_user)):
     """Layer 12 — backfill the actual outcome for a past logged recommendation."""
     try:
         result = record_outcome(recommendation_id, current_price)
@@ -1126,7 +1270,7 @@ def record_recommendation_outcome(recommendation_id: str, current_price: float):
 
 
 @app.get("/api/recommendations/history")
-def get_recommendations_history(ticker: str = None):
+def get_recommendations_history(ticker: str = None, user: str = Depends(get_current_user)):
     """Layer 12 — recommendation log, optionally filtered by ticker."""
     try:
         return {"history": get_recommendation_history(ticker)}
@@ -1135,7 +1279,7 @@ def get_recommendations_history(ticker: str = None):
 
 
 @app.get("/api/recommendations/accuracy")
-def get_recommendations_accuracy():
+def get_recommendations_accuracy(user: str = Depends(get_current_user)):
     """Layer 12 — aggregate accuracy stats across all recommendations
     with recorded outcomes. Empty/low-confidence until months of
     history accumulate — this is expected, not a bug."""
@@ -1146,7 +1290,7 @@ def get_recommendations_accuracy():
 
 
 @app.get("/api/recommendations/effectiveness")
-def get_recommendations_effectiveness():
+def get_recommendations_effectiveness(user: str = Depends(get_current_user)):
     """Layer 12 — the actual feedback loop. Shows how strongly each
     Layer 10 component (company, valuation, technical, capital flow,
     sector) has historically correlated with real outcomes, and
@@ -1161,7 +1305,7 @@ def get_recommendations_effectiveness():
 
 
 @app.post("/api/trades")
-def add_trade(trade: TradeRequest):
+def add_trade(trade: TradeRequest, user: str = Depends(get_current_user)):
     try:
         ticker = trade.ticker.upper()
         if "." not in ticker:
@@ -1178,8 +1322,33 @@ def add_trade(trade: TradeRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.delete("/api/trades/{trade_id}")
+def delete_trade(trade_id: str, user: str = Depends(get_current_user)):
+    """Remove a single stuck or erroneous trade entry."""
+    try:
+        result = portfolio.delete_trade(trade_id)
+        if not result.get("success"):
+            raise HTTPException(status_code=404, detail=result.get("reason"))
+        return _enrich(portfolio.get_summary(loader))
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/api/trades/ticker/{ticker}")
+def delete_all_trades_for_ticker(ticker: str, user: str = Depends(get_current_user)):
+    """Clear every trade for a ticker in one action - for when an
+    entire position was entered wrong and needs a clean restart."""
+    try:
+        result = portfolio.delete_all_trades_for_ticker(ticker)
+        return _enrich(portfolio.get_summary(loader))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/api/analytics")
-def get_analytics():
+def get_analytics(user: str = Depends(get_current_user)):
     try:
         return analytics.get_analytics(portfolio, loader, scorer, NSE_TICKERS)
     except Exception as e:
@@ -1189,12 +1358,12 @@ def get_analytics():
 # ── Watchlist ──────────────────────────────────────────────────────────────
 
 @app.get("/api/watchlist")
-def get_watchlist():
+def get_watchlist(user: str = Depends(get_current_user)):
     wl = loader.get_watchlist()
     return {"watchlist": wl}
 
 @app.post("/api/watchlist/add")
-def add_watchlist(req: WatchlistRequest):
+def add_watchlist(req: WatchlistRequest, user: str = Depends(get_current_user)):
     ticker = req.ticker.upper()
     if "." not in ticker:
         ticker += ".NR"
@@ -1202,7 +1371,7 @@ def add_watchlist(req: WatchlistRequest):
     return {"watchlist": wl}
 
 @app.post("/api/watchlist/remove")
-def remove_watchlist(req: WatchlistRequest):
+def remove_watchlist(req: WatchlistRequest, user: str = Depends(get_current_user)):
     ticker = req.ticker.upper()
     if "." not in ticker:
         ticker += ".NR"

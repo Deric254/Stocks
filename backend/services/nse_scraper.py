@@ -34,6 +34,34 @@ from services.paths import DATA_DIR
 CACHE_DIR = DATA_DIR / "nse_cache"
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
+# Tier-3 seed fallback for get_fundamentals() below. This was
+# previously referenced as a bare name (SEED_FUNDAMENTALS) that was
+# never actually defined anywhere in this module - a pre-existing bug
+# that has silently crashed (and been silently swallowed by every
+# prior caller's own exception handling) for as long as this code
+# existed, surfaced for the first time by a new caller that reports
+# per-ticker errors explicitly instead of swallowing them. Loaded from
+# the same JSON file and in the same way as data_loader.py's
+# _load_seed(), so both modules agree on what "seed data" means.
+_SEED_FUNDAMENTALS_CACHE = None
+
+
+def _get_seed_fundamentals() -> dict:
+    global _SEED_FUNDAMENTALS_CACHE
+    if _SEED_FUNDAMENTALS_CACHE is not None:
+        return _SEED_FUNDAMENTALS_CACHE
+    seed_path = DATA_DIR / "nse_fundamentals_seed.json"
+    if seed_path.exists():
+        try:
+            with open(seed_path) as f:
+                raw = json.load(f)
+            _SEED_FUNDAMENTALS_CACHE = {k: v for k, v in raw.items() if not k.startswith("_")}
+            return _SEED_FUNDAMENTALS_CACHE
+        except Exception:
+            pass
+    _SEED_FUNDAMENTALS_CACHE = {}
+    return _SEED_FUNDAMENTALS_CACHE
+
 PRICES_CACHE  = CACHE_DIR / "prices.json"
 FUND_CACHE    = CACHE_DIR / "fundamentals.json"
 HEALTH_CACHE  = CACHE_DIR / "data_health.json"
@@ -641,7 +669,7 @@ def get_fundamentals(ticker: str) -> dict:
                 _update_health(base, field, "failed", None, "afx.kwayisi.org")
 
     # --- Tier 3: Seed fundamentals (always available) ---
-    seed = SEED_FUNDAMENTALS.get(base)
+    seed = _get_seed_fundamentals().get(base)
     if seed:
         result = {
             "ticker":           base,
