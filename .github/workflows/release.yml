@@ -21,9 +21,21 @@ on:
 permissions:
   contents: write
 
+# Serialize releases. Without this, two pushes landing close together can
+# both read the same starting version, both compute the same next version,
+# and race to create the same tag - which is exactly how VERSION and git
+# tags drifted out of sync before. cancel-in-progress must stay false: we
+# want runs to queue, not to cancel a release that's already mid-build.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
   bump-version:
     runs-on: ubuntu-latest
+    # Belt-and-suspenders alongside the native `[skip ci]` push-skip: never
+    # let the bot's own version-bump commit trigger another release run.
+    if: "!contains(github.event.head_commit.message, '[skip ci]')"
     outputs:
       new_version: ${{ steps.bump.outputs.new_version }}
       tag: ${{ steps.bump.outputs.tag }}
@@ -32,11 +44,28 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Determine current version (self-healing against drift)
+        id: current
+        run: |
+          set -e
+          FILE_VERSION=$(cat VERSION 2>/dev/null || echo "0.0.0")
+          # Tags are the real record of what's been released; the VERSION
+          # file is just a cached copy baked into the build. If they've
+          # ever drifted (as they did here), trust whichever is higher so
+          # we never emit a version/tag that already exists.
+          TAG_VERSION=$(git tag -l 'v*' | sed 's/^v//' | sort -t. -k1,1n -k2,2n -k3,3n | tail -n1)
+          TAG_VERSION="${TAG_VERSION:-0.0.0}"
+          HIGHEST=$(printf '%s\n%s\n' "$FILE_VERSION" "$TAG_VERSION" | sort -t. -k1,1n -k2,2n -k3,3n | tail -n1)
+          if [ "$HIGHEST" != "$FILE_VERSION" ]; then
+            echo "::warning::VERSION file ($FILE_VERSION) was behind latest tag ($TAG_VERSION) - self-healing from tags."
+          fi
+          echo "current=$HIGHEST" >> "$GITHUB_OUTPUT"
+
       - name: Bump version
         id: bump
         run: |
           set -e
-          CURRENT=$(cat VERSION 2>/dev/null || echo "0.0.0")
+          CURRENT="${{ steps.current.outputs.current }}"
           IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
           BUMP_TYPE="${{ github.event.inputs.bump || 'patch' }}"
 
@@ -49,20 +78,73 @@ jobs:
           fi
 
           NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}"
+          TAG="v$NEW_VERSION"
+
+          # Guard against the exact failure this repo hit: a tag that
+          # already exists (locally, because fetch-depth:0 pulled it down,
+          # or on the remote from a run that half-completed). Keep bumping
+          # the patch number until we land on a genuinely free tag, instead
+          # of crashing the whole pipeline. Capped so a persistent lookup
+          # failure can't spin this forever - after 20 attempts something
+          # else is wrong and we want a loud, investigable failure.
+          ATTEMPTS=0
+          while git rev-parse -q --verify "refs/tags/$TAG" >/dev/null 2>&1 || \
+                git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; do
+            ATTEMPTS=$((ATTEMPTS+1))
+            if [ "$ATTEMPTS" -ge 20 ]; then
+              echo "::error::Could not find a free tag after 20 attempts starting from $CURRENT. Investigate tag/VERSION state manually."
+              exit 1
+            fi
+            echo "::warning::Tag $TAG already exists, bumping patch further."
+            PATCH=$((PATCH+1))
+            NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}"
+            TAG="v$NEW_VERSION"
+          done
+
           echo "$NEW_VERSION" > VERSION
           echo "new_version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
-          echo "tag=v$NEW_VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "Bumping $CURRENT -> $NEW_VERSION"
 
-      - name: Commit version bump
+      - name: Commit and tag (atomic, with retry on race)
         run: |
+          set -e
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add VERSION
           git commit -m "chore: bump version to ${{ steps.bump.outputs.new_version }} [skip ci]"
+
+          # Push the commit BEFORE creating the tag. If a rebase happens
+          # here, the commit gets a new SHA - creating the tag first (as
+          # the original workflow effectively did) would leave it pointing
+          # at an orphaned pre-rebase commit, off of main's real history.
+          # Tagging only after a confirmed-successful push guarantees the
+          # tag always points at a commit that's actually on main.
+          for i in 1 2 3; do
+            if git push origin main; then
+              break
+            fi
+            echo "Push to main rejected, fetching and rebasing (attempt $i)..."
+            git fetch origin main
+            git rebase origin/main
+            if [ "$i" = "3" ]; then
+              echo "::error::Could not push version bump to main after 3 attempts."
+              exit 1
+            fi
+          done
+
+          # Now HEAD is guaranteed to be the real, pushed commit on main.
           git tag "${{ steps.bump.outputs.tag }}"
-          git push origin main
-          git push origin "${{ steps.bump.outputs.tag }}"
+
+          # Tag push is the step that failed before. If the tag somehow
+          # exists on the remote by the time we push (another concurrent
+          # actor), fail loudly and clearly instead of a bare git error -
+          # this should be unreachable given concurrency: group above and
+          # the pre-check in the Bump version step, so surface it plainly.
+          if ! git push origin "${{ steps.bump.outputs.tag }}"; then
+            echo "::error::Tag ${{ steps.bump.outputs.tag }} was rejected by the remote even after pre-checks. Investigate for a concurrent release run outside this workflow's concurrency group."
+            exit 1
+          fi
 
   build:
     needs: bump-version
