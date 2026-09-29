@@ -4,12 +4,43 @@ import { useState, useEffect, useCallback, useRef } from "react";
 // To deploy: set VITE_API_URL env variable in your hosting dashboard
 const API = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
-// Fetch with timeout — prevents infinite loading on Render cold start
-function fetchTimeout(url, opts={}, ms=25000){
+// ── AUTH TOKEN STORAGE ────────────────────────────────────────────────────
+// The backend requires "Authorization: Bearer <token>" on almost every route.
+let _memToken = null;
+const TOKEN_KEY = "stockintel_token";
+const getToken = () => {
+  try { return localStorage.getItem(TOKEN_KEY) || _memToken; } catch { return _memToken; }
+};
+const setToken = (t) => {
+  _memToken = t || null;
+  try { t ? localStorage.setItem(TOKEN_KEY, t) : localStorage.removeItem(TOKEN_KEY); } catch {}
+};
+const authHeaders = (extra={}) => {
+  const t = getToken();
+  return t ? {...extra, Authorization:`Bearer ${t}`} : {...extra};
+};
+
+// Called whenever the backend answers 401 (expired/invalid session)
+let _onUnauthorized = null;
+const setUnauthorizedHandler = (fn) => { _onUnauthorized = fn; };
+
+// Fetch with timeout — Render free tier can take 30-60s to wake from sleep
+function fetchTimeout(url, opts={}, ms=60000){
   const ctrl = new AbortController();
   const id = setTimeout(()=>ctrl.abort(), ms);
-  return fetch(url, {...opts, signal: ctrl.signal})
-    .then(r=>{ clearTimeout(id); if(!r.ok) throw new Error(r.status); return r.json(); })
+  return fetch(url, {...opts, headers:authHeaders(opts.headers||{}), signal: ctrl.signal})
+    .then(async r=>{
+      clearTimeout(id);
+      if(!r.ok){
+        let detail = "";
+        try{ const j = await r.json(); detail = j.detail || ""; }catch{}
+        if(r.status===401 && getToken() && _onUnauthorized) _onUnauthorized();
+        const err = new Error(detail || String(r.status));
+        err.status = r.status;
+        throw err;
+      }
+      return r.json();
+    })
     .catch(e=>{ clearTimeout(id); throw e; });
 }
 const get  = (p) => fetchTimeout(`${API}${p}`);
@@ -1397,17 +1428,22 @@ function DataFreshness({onToast, focusTicker=null, focusField=null}){
 
   const downloadTemplate = async (type) => {
     try{
+      const r = await fetch(`${API}/api/template/${type}`,{headers:authHeaders()});
+      if(!r.ok) throw new Error(String(r.status));
+      const blob = await r.blob();
+      const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
-      a.href = `${API}/api/template/${type}`;
+      a.href = url;
       a.download = `nse_${type}_template.csv`;
       a.click();
+      setTimeout(()=>URL.revokeObjectURL(url),1000);
     }catch(e){ onToast("Download failed","error"); }
   };
 
   const handleUploadPrices = async (formData) => {
     setUploadingPrice(true); setUploadResult(null);
     try{
-      const r = await fetch(`${API}/api/upload/prices`,{method:"POST",body:formData});
+      const r = await fetch(`${API}/api/upload/prices`,{method:"POST",headers:authHeaders(),body:formData});
       const d = await r.json();
       if(!r.ok) throw new Error(d.detail||"Upload failed");
       onToast(`Prices uploaded: ${d.updated} tickers updated`,"info");
@@ -1424,7 +1460,7 @@ function DataFreshness({onToast, focusTicker=null, focusField=null}){
   const handleUploadFundamentals = async (formData) => {
     setUploadingFund(true); setUploadResult(null);
     try{
-      const r = await fetch(`${API}/api/upload/fundamentals`,{method:"POST",body:formData});
+      const r = await fetch(`${API}/api/upload/fundamentals`,{method:"POST",headers:authHeaders(),body:formData});
       const d = await r.json();
       if(!r.ok) throw new Error(d.detail||"Upload failed");
       onToast(`Fundamentals uploaded: ${d.updated} tickers updated`,"info");
@@ -2000,7 +2036,7 @@ function MacroIntelligence({onToast}){
 // ══════════════════════════════════════════════════════════════════════════
 // ROOT APP
 // ══════════════════════════════════════════════════════════════════════════
-export default function App(){
+function AppMain({username,onLogout}){
   const [page,setPage]           = useState("dashboard");
   const [sidebarOpen,setSidebarOpen] = useState(false);
   const [healthAlerts,setHealthAlerts] = useState([]);
@@ -2037,7 +2073,12 @@ export default function App(){
         if(d.stocks?.length){setStocks(d.stocks);setLive(true);setOffline(false);}
         else{setStocks([]);setLive(false);}
       })
-      .catch(()=>{setLive(false);setOffline(true);showToast("Cannot reach backend — check CMD window","error");})
+      .catch((e)=>{
+        setLive(false);
+        if(e && e.status===401) return; // session expired -> login screen handles it
+        setOffline(true);
+        showToast("Cannot reach backend — it may be waking up, retry in a minute","error");
+      })
       .finally(()=>setStocksLoading(false));
   },[]);
 
@@ -2150,7 +2191,7 @@ export default function App(){
         <div style={{padding:"13px 16px",borderTop:"1px solid #ffffff22"}}>
           <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
             <div style={{width:8,height:8,borderRadius:"50%",flexShrink:0,background:live===null?C.gold:live?"#4ade80":C.red,boxShadow:live?"0 0 6px #4ade80":"none"}}/>
-            <span style={{fontSize:11,color:"#ffffffBB"}}>{live===null?"Connecting…":live?"🟢 Live NSE data":"🔴 No live data"}</span>
+            <span style={{fontSize:11,color:"#ffffffBB"}}>{live===null?"Connecting…":live?"🟢 Live NSE data":"🔴 No live data"}</span><button onClick={onLogout} style={{background:"#ffffff22",border:"none",color:"#fff",fontSize:10,padding:"3px 8px",borderRadius:6,cursor:"pointer",marginLeft:"auto"}}>Log out{username?" ("+username+")":""}</button>
           </div>
           <a href="https://dericbi.vercel.app" target="_blank" rel="noreferrer" style={{fontSize:10,color:"#ffffff70",textDecoration:"none",lineHeight:1.7,display:"block"}}>dericbi.vercel.app →</a>
         </div>
@@ -2181,7 +2222,7 @@ export default function App(){
         <div style={{padding:"13px 16px",borderTop:"1px solid #ffffff22"}}>
           <div style={{display:"flex",alignItems:"center",gap:8}}>
             <div style={{width:8,height:8,borderRadius:"50%",background:live===null?C.gold:live?"#4ade80":C.red}}/>
-            <span style={{fontSize:11,color:"#ffffffBB"}}>{live===null?"Connecting…":live?"🟢 Live":"🔴 Offline"}</span>
+            <span style={{fontSize:11,color:"#ffffffBB"}}>{live===null?"Connecting…":live?"🟢 Live":"🔴 Offline"}</span><button onClick={onLogout} style={{background:"#ffffff22",border:"none",color:"#fff",fontSize:10,padding:"3px 8px",borderRadius:6,cursor:"pointer",marginLeft:"auto"}}>Log out{username?" ("+username+")":""}</button>
           </div>
         </div>
       </div>
@@ -2308,3 +2349,204 @@ export default function App(){
     </div>
   );
 }
+
+// ── AUTH SCREEN (login / register / forgot password) ──────────────────────
+const SECURITY_QUESTION_PRESETS = [
+  "What was the name of your first school?",
+  "What is your mother's maiden name?",
+  "What was the name of your first pet?",
+  "In what town or village were you born?",
+  "What was your childhood nickname?",
+  "What is the name of your favourite teacher?",
+  "What was the make of your first vehicle?",
+];
+
+function AuthScreen({onAuthed,anyUsers,serverError,onRetry}){
+  const [mode,setMode]       = useState(anyUsers===false?"register":"login");
+  const [username,setUsername] = useState("");
+  const [password,setPassword] = useState("");
+  const [confirm,setConfirm]   = useState("");
+  const [qs,setQs]           = useState([
+    {question:SECURITY_QUESTION_PRESETS[0],answer:""},
+    {question:SECURITY_QUESTION_PRESETS[2],answer:""},
+    {question:SECURITY_QUESTION_PRESETS[3],answer:""},
+  ]);
+  const [resetQs,setResetQs] = useState(null);
+  const [resetAns,setResetAns] = useState([]);
+  const [busy,setBusy]       = useState(false);
+  const [msg,setMsg]         = useState(null);
+
+  const input={width:"100%",padding:"10px 12px",borderRadius:8,border:"1px solid "+C.borderGray,fontSize:14,marginBottom:10,background:"#fff",color:C.text};
+  const btn={width:"100%",padding:"11px",borderRadius:9,border:"none",background:C.green,color:"#fff",fontWeight:700,fontSize:14,cursor:"pointer",opacity:busy?0.6:1};
+  const link={background:"none",border:"none",color:C.green,fontWeight:600,fontSize:12,cursor:"pointer",padding:4};
+  const err=(t)=>setMsg({type:"error",text:t});
+
+  const doLogin=async()=>{
+    setBusy(true);setMsg(null);
+    try{
+      const r=await post("/api/auth/login",{username:username.trim(),password});
+      setToken(r.token);
+      onAuthed(r.username);
+    }catch(e){err(e.status===401?(e.message||"Incorrect username or password"):"Cannot reach the server — it may be waking up. Try again in a minute.");}
+    finally{setBusy(false);}
+  };
+
+  const doRegister=async()=>{
+    setMsg(null);
+    if(username.trim().length<3) return err("Username must be at least 3 characters");
+    if(password.length<8) return err("Password must be at least 8 characters");
+    if(password!==confirm) return err("Passwords do not match");
+    if(new Set(qs.map(q=>q.question)).size<3) return err("Pick 3 different security questions");
+    if(qs.some(q=>!q.answer.trim())) return err("Answer all 3 security questions");
+    setBusy(true);
+    try{
+      await post("/api/auth/register",{username:username.trim(),password,security_questions:qs});
+      await doLogin();
+    }catch(e){err(e.message||"Registration failed");setBusy(false);}
+  };
+
+  const startForgot=async()=>{
+    setMsg(null);
+    if(!username.trim()) return err("Enter your username first");
+    setBusy(true);
+    try{
+      const r=await get("/api/auth/security-questions/"+encodeURIComponent(username.trim()));
+      setResetQs(r.questions);setResetAns(r.questions.map(()=>""));setPassword("");setConfirm("");setMode("reset");
+    }catch(e){err(e.status===404?"No account found with that username":"Cannot reach the server");}
+    finally{setBusy(false);}
+  };
+
+  const doReset=async()=>{
+    setMsg(null);
+    if(password.length<8) return err("New password must be at least 8 characters");
+    if(password!==confirm) return err("Passwords do not match");
+    setBusy(true);
+    try{
+      await post("/api/auth/reset-password",{username:username.trim(),answers:resetAns,new_password:password});
+      setMode("login");setPassword("");setConfirm("");
+      setMsg({type:"ok",text:"Password reset. Log in with your new password."});
+    }catch(e){err(e.message||"Reset failed");}
+    finally{setBusy(false);}
+  };
+
+  const onKey=(fn)=>(e)=>{if(e.key==="Enter"&&!busy)fn();};
+
+  return(
+    <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",background:"linear-gradient(160deg,"+C.green+","+C.greenDk+")",padding:16,fontFamily:"'Segoe UI','Inter',system-ui,sans-serif"}}>
+      <div style={{width:"100%",maxWidth:400,background:"#fff",borderRadius:16,padding:"28px 26px",boxShadow:"0 10px 40px #00000030"}}>
+        <div style={{textAlign:"center",marginBottom:18}}>
+          <img src="/logo.png" alt="" style={{width:56,height:56,borderRadius:"50%",objectFit:"cover",border:"3px solid "+C.gold}} onError={e=>e.target.style.display="none"}/>
+          <div style={{fontSize:22,fontWeight:900,color:C.text,marginTop:6}}>Stock<span style={{color:C.goldDk}}>Intel</span></div>
+          <div style={{fontSize:12,color:C.muted}}>
+            {mode==="login"&&"Log in to continue"}
+            {mode==="register"&&(anyUsers===false?"Create your account to get started":"Create an account")}
+            {mode==="reset"&&"Reset your password"}
+          </div>
+        </div>
+
+        {serverError&&(
+          <div style={{background:C.yellowLt,border:"1px solid "+C.yellow,color:"#92400e",fontSize:12,padding:"8px 10px",borderRadius:8,marginBottom:12}}>
+            Can't reach the server. If it was idle it can take up to a minute to wake up.{" "}
+            <button onClick={onRetry} style={{...link,color:"#92400e",textDecoration:"underline"}}>Retry</button>
+          </div>
+        )}
+        {msg&&(
+          <div style={{background:msg.type==="ok"?C.greenLt:C.redLt,color:msg.type==="ok"?C.greenDk:"#991b1b",fontSize:12,padding:"8px 10px",borderRadius:8,marginBottom:12}}>{msg.text}</div>
+        )}
+
+        {mode==="login"&&(<>
+          <input style={input} placeholder="Username" value={username} autoComplete="username" onChange={e=>setUsername(e.target.value)} onKeyDown={onKey(doLogin)}/>
+          <input style={input} type="password" placeholder="Password" value={password} autoComplete="current-password" onChange={e=>setPassword(e.target.value)} onKeyDown={onKey(doLogin)}/>
+          <button style={btn} disabled={busy} onClick={doLogin}>{busy?"Logging in…":"Log in"}</button>
+          <div style={{display:"flex",justifyContent:"space-between",marginTop:10}}>
+            <button style={link} onClick={()=>{setMsg(null);setMode("register");}}>Create account</button>
+            <button style={link} onClick={startForgot}>Forgot password?</button>
+          </div>
+        </>)}
+
+        {mode==="register"&&(<>
+          <input style={input} placeholder="Username (min 3 characters)" value={username} autoComplete="username" onChange={e=>setUsername(e.target.value)}/>
+          <input style={input} type="password" placeholder="Password (min 8 characters)" value={password} autoComplete="new-password" onChange={e=>setPassword(e.target.value)}/>
+          <input style={input} type="password" placeholder="Confirm password" value={confirm} autoComplete="new-password" onChange={e=>setConfirm(e.target.value)}/>
+          <div style={{fontSize:11,color:C.muted,margin:"4px 0 8px"}}>Security questions — answering any one correctly lets you reset your password.</div>
+          {qs.map((q,i)=>(
+            <div key={i}>
+              <select style={input} value={q.question} onChange={e=>setQs(qs.map((x,j)=>j===i?{...x,question:e.target.value}:x))}>
+                {SECURITY_QUESTION_PRESETS.map(p=><option key={p} value={p}>{p}</option>)}
+              </select>
+              <input style={input} placeholder="Your answer" value={q.answer} onChange={e=>setQs(qs.map((x,j)=>j===i?{...x,answer:e.target.value}:x))}/>
+            </div>
+          ))}
+          <button style={btn} disabled={busy} onClick={doRegister}>{busy?"Creating…":"Create account"}</button>
+          <div style={{textAlign:"center",marginTop:10}}>
+            <button style={link} onClick={()=>{setMsg(null);setMode("login");}}>Already have an account? Log in</button>
+          </div>
+        </>)}
+
+        {mode==="reset"&&resetQs&&(<>
+          {resetQs.map((q,i)=>(
+            <div key={i}>
+              <div style={{fontSize:12,color:C.textMid,marginBottom:4}}>{q}</div>
+              <input style={input} placeholder="Answer (leave blank if unsure)" value={resetAns[i]||""} onChange={e=>setResetAns(resetAns.map((x,j)=>j===i?e.target.value:x))}/>
+            </div>
+          ))}
+          <input style={input} type="password" placeholder="New password (min 8 characters)" value={password} autoComplete="new-password" onChange={e=>setPassword(e.target.value)}/>
+          <input style={input} type="password" placeholder="Confirm new password" value={confirm} autoComplete="new-password" onChange={e=>setConfirm(e.target.value)}/>
+          <button style={btn} disabled={busy} onClick={doReset}>{busy?"Resetting…":"Reset password"}</button>
+          <div style={{textAlign:"center",marginTop:10}}>
+            <button style={link} onClick={()=>{setMsg(null);setMode("login");}}>Back to log in</button>
+          </div>
+        </>)}
+      </div>
+    </div>
+  );
+}
+
+// ── AUTH GATE (default export) ────────────────────────────────────────────
+export default function App(){
+  const [state,setState]       = useState("checking"); // checking | login | authed
+  const [username,setUsername] = useState("");
+  const [anyUsers,setAnyUsers] = useState(null);
+  const [serverError,setServerError] = useState(false);
+
+  const logout=useCallback(async()=>{
+    try{ await fetch(`${API}/api/auth/logout`,{method:"POST",headers:authHeaders()}); }catch{}
+    setToken(null);setUsername("");setState("login");
+  },[]);
+
+  const check=useCallback(async()=>{
+    setServerError(false);setState("checking");
+    // Is there any account yet? (decides Register vs Login as the first screen)
+    try{
+      const st=await get("/api/auth/status");
+      setAnyUsers(!!st.any_users_exist);
+    }catch{ setServerError(true); setState("login"); return; }
+
+    if(!getToken()){ setState("login"); return; }
+    try{
+      const me=await get("/api/auth/me");
+      setUsername(me.username);setState("authed");
+    }catch(e){
+      if(e.status===401){ setToken(null); }
+      else{ setServerError(true); }
+      setState("login");
+    }
+  },[]);
+
+  useEffect(()=>{
+    setUnauthorizedHandler(()=>{ setToken(null); setUsername(""); setState("login"); });
+    check();
+    return ()=>setUnauthorizedHandler(null);
+  },[check]);
+
+  if(state==="checking") return(
+    <div style={{minHeight:"100vh",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:16,background:C.bg,fontFamily:"system-ui,sans-serif",color:C.muted,fontSize:13}}>
+      <div style={{width:44,height:44,border:"4px solid "+C.greenLt,borderTopColor:C.green,borderRadius:"50%",animation:"spin 0.8s linear infinite"}}/>
+      <style>{`@keyframes spin{to{transform:rotate(360deg);}}`}</style>
+      Connecting to StockIntel… (first load can take up to a minute)
+    </div>
+  );
+  if(state==="login") return <AuthScreen key={String(anyUsers)} anyUsers={anyUsers} serverError={serverError} onRetry={check} onAuthed={(u)=>{setUsername(u);setState("authed");}}/>;
+  return <AppMain username={username} onLogout={logout}/>;
+}
+
