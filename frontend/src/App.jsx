@@ -1386,22 +1386,66 @@ function DataFreshness({onToast, focusTicker=null, focusField=null}){
   const [updateAllResult, setUpdateAllResult] = useState(null);
   const rowRefs = useRef({});
 
-  const handleUpdateAllData = async () => {
-    setUpdatingAll(true); setUpdateAllResult(null);
-    try{
-      const r = await post("/api/data/update-all", {});
-      setUpdateAllResult(r);
-      const improved = r.fundamentals?.tickers_improved || 0;
-      const derived = r.fundamentals?.fields_derived || 0;
-      const pricesAdded = r.prices?.total_added || 0;
-      onToast(`Update complete: ${pricesAdded} prices refreshed, ${improved} tickers improved, ${derived} fields derived`, "success");
-      load();
-    }catch(e){
-      onToast("Update failed: "+e.message, "error");
-    }
+  const [updateProgress, setUpdateProgress] = useState(null);
+  const pollRef = useRef(null);
+  const pollFails = useRef(0);
+
+  const finishUpdate = (j) => {
     setUpdatingAll(false);
+    if(j.state==="done" && j.report){
+      const r = j.report;
+      setUpdateAllResult(r);
+      const f = r.fundamentals||{};
+      const msg = `${r.prices?.total_added||0} prices refreshed, ${f.tickers_improved||0} tickers improved, ${f.fields_derived||0} fields derived`;
+      if(r.status==="complete") onToast("Update complete: "+msg, "success");
+      else if(r.status==="no_live_data") onToast("Live sources returned nothing — your existing data is unchanged", "error");
+      else onToast("Update finished with warnings: "+msg, "success");
+      load();
+    } else {
+      onToast("Update failed: "+(j.error||"unknown error")+" — existing data is unchanged", "error");
+    }
   };
 
+  // Poll the background job until it finishes. Tolerates brief network blips
+  // (e.g. a Render cold start) instead of giving up on the first failed poll.
+  const pollUpdate = async () => {
+    try{
+      const j = await get("/api/data/update-status");
+      pollFails.current = 0;
+      setUpdateProgress(j);
+      if(j.state==="running"){ pollRef.current = setTimeout(pollUpdate, 2000); return; }
+      finishUpdate(j);
+    }catch(e){
+      pollFails.current += 1;
+      if(pollFails.current >= 6){
+        setUpdatingAll(false);
+        onToast("Lost contact with the server while updating. Refresh the page to see the result.", "error");
+        return;
+      }
+      pollRef.current = setTimeout(pollUpdate, 3000);
+    }
+  };
+
+  const handleUpdateAllData = async () => {
+    setUpdatingAll(true); setUpdateAllResult(null); setUpdateProgress(null);
+    pollFails.current = 0;
+    try{
+      const j = await post("/api/data/update-all", {});
+      setUpdateProgress(j);
+      pollRef.current = setTimeout(pollUpdate, 1500);
+    }catch(e){
+      setUpdatingAll(false);
+      onToast("Could not start update: "+e.message, "error");
+    }
+  };
+
+  // If an update is already running (page reloaded / navigated back), resume showing it.
+  useEffect(()=>{
+    get("/api/data/update-status").then(j=>{
+      if(j.state==="running"){ setUpdatingAll(true); setUpdateProgress(j); pollRef.current=setTimeout(pollUpdate,1500); }
+    }).catch(()=>{});
+    return ()=>clearTimeout(pollRef.current);
+  },[]);
 
   const load = () => {
     setLoading(true);
@@ -1523,7 +1567,7 @@ function DataFreshness({onToast, focusTicker=null, focusField=null}){
         <div>
           <div style={{fontSize:14,fontWeight:800,color:C.text}}>Update Data</div>
           <div style={{fontSize:11,color:C.muted,marginTop:2,maxWidth:480}}>
-            Pulls fresh prices and fundamentals from live sources for every tracked stock, keeps your existing good data wherever live sources have nothing, and fills remaining gaps using safe arithmetic (e.g. margin from net income ÷ revenue) — never invents a number that can't be traced back to something real. Can take up to a minute.
+            Pulls fresh prices and fundamentals from live sources for every tracked stock, keeps your existing good data wherever live sources have nothing, and fills remaining gaps using safe arithmetic (e.g. margin from net income ÷ revenue) — never invents a number that can't be traced back to something real. Runs in the background and shows live progress.
           </div>
         </div>
         <button onClick={handleUpdateAllData} disabled={updatingAll}
@@ -1531,11 +1575,26 @@ function DataFreshness({onToast, focusTicker=null, focusField=null}){
           {updatingAll?"⏳ Updating...":"🔄 Update Data"}
         </button>
       </div>
+      {updatingAll&&updateProgress&&(
+        <div style={{...card,marginBottom:20,fontSize:12,color:C.textMid}}>
+          <div style={{display:"flex",justifyContent:"space-between",marginBottom:6}}>
+            <span style={{fontWeight:700,color:C.text}}>
+              {updateProgress.stage==="prices"?"Fetching live prices…":`Fetching fundamentals… ${updateProgress.current||""}`}
+            </span>
+            <span>{updateProgress.done||0} / {updateProgress.total||0}</span>
+          </div>
+          <div style={{height:8,borderRadius:4,background:C.greenLt,overflow:"hidden"}}>
+            <div style={{height:"100%",width:`${updateProgress.total?Math.round(100*(updateProgress.done||0)/updateProgress.total):0}%`,background:C.green,transition:"width .4s"}}/>
+          </div>
+        </div>
+      )}
       {updateAllResult&&(
         <div style={{...card,marginBottom:20,fontSize:12,color:C.textMid}}>
           <div style={{fontWeight:700,marginBottom:6,color:C.text}}>Last update result</div>
           <div>Prices: {updateAllResult.prices?.total_added ?? 0} tickers refreshed today, {updateAllResult.prices?.skipped_duplicate?.length ?? 0} already up to date</div>
-          <div>Fundamentals: {updateAllResult.fundamentals?.tickers_improved ?? 0} tickers improved, {updateAllResult.fundamentals?.fields_derived ?? 0} fields filled via derivation</div>
+          <div>Fundamentals: {updateAllResult.fundamentals?.tickers_improved ?? 0} tickers improved, {updateAllResult.fundamentals?.fields_derived ?? 0} fields filled via derivation ({updateAllResult.fundamentals?.tickers_live_ok ?? 0} of {updateAllResult.fundamentals?.tickers_total ?? 0} had live data)</div>
+          {updateAllResult.warnings?.map((w,i)=><div key={i} style={{color:C.orange,marginTop:4}}>⚠ {w}</div>)}
+          {updateAllResult.duration_s!=null&&<div style={{color:C.muted,marginTop:4}}>Finished in {updateAllResult.duration_s}s</div>}
           {updateAllResult.fundamentals?.errors?.length>0&&<div style={{color:C.orange,marginTop:4}}>{updateAllResult.fundamentals.errors.length} tickers had a live-fetch issue (existing data preserved, nothing lost)</div>}
         </div>
       )}

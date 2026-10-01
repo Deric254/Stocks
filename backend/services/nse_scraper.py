@@ -143,6 +143,18 @@ def _save_cache(path: Path, data: dict):
         except Exception as e:
             print(f"[NSE] Cache save failed {path.name}: {e}")
 
+_rmw_lock = threading.RLock()
+
+def _cache_set(path: Path, key: str, value: dict):
+    """Atomic read-modify-write of ONE key in a JSON cache. Safe when the
+    refresh runs several tickers in parallel - without this, two threads
+    could load the same file, and the later save would silently drop the
+    earlier thread's ticker."""
+    with _rmw_lock:
+        data = _load_cache(path)
+        data[key] = value
+        _save_cache(path, data)
+
 def _age_seconds(ts_str) -> float:
     try:
         dt = datetime.fromisoformat(str(ts_str))
@@ -188,6 +200,17 @@ def _update_health(ticker: str, field: str, status: str, value=None, source: str
         "updated_at": datetime.now().isoformat(),
     }
     _save_cache(HEALTH_CACHE, health)
+
+def _update_health_many(ticker: str, results: dict, source: str = ""):
+    """Record every field's health for one ticker with ONE disk write
+    (the per-field version rewrote the whole health file 7x per ticker)."""
+    with _rmw_lock:
+        health = _load_cache(HEALTH_CACHE)
+        t = health.setdefault(ticker, {})
+        now = datetime.now().isoformat()
+        for field, (status, value) in results.items():
+            t[field] = {"status": status, "value": value, "source": source, "updated_at": now}
+        _save_cache(HEALTH_CACHE, health)
 
 def get_data_health_report(tickers: list) -> dict:
     """
@@ -586,7 +609,7 @@ def get_price(ticker: str) -> dict:
     }
 
 
-def get_fundamentals(ticker: str) -> dict:
+def get_fundamentals(ticker: str, allow_price_fetch: bool = True) -> dict:
     """
     Get fundamentals using 3-tier approach:
       1. SEED (primary) — pre-seeded from NSE annual reports FY2024. Always available.
@@ -619,8 +642,14 @@ def get_fundamentals(ticker: str) -> dict:
     if should_scrape:
         print(f"[NSE] Attempting live fundamentals fetch for {base}…")
         afx = _scrape_afx(base)
-        price_data = get_price(ticker)
-        price = price_data.get("price", 0)
+        if allow_price_fetch:
+            price_data = get_price(ticker)
+        else:
+            # Bulk refresh path: NEVER trigger another network price fetch
+            # per ticker (that re-hit slow sites 55 times). Use whatever the
+            # single bulk fetch already cached.
+            price_data = _load_cache(PRICES_CACHE).get(base, {})
+        price = price_data.get("price", 0) or 0
 
         if afx and (afx.get("price") or any(afx.get(f) is not None for f in ["pe", "eps", "roe", "bvps"])):
             pe   = afx.get("pe")
@@ -649,11 +678,9 @@ def get_fundamentals(ticker: str) -> dict:
                 "data_stale":   False,
                 "fetch_ok":     True,
             }
-            for field in TRACKED_FUND_FIELDS:
-                val = result.get(field)
-                _update_health(base, field, "ok" if val is not None else "missing", val, "afx.kwayisi.org")
-            cache[base] = result
-            _save_cache(FUND_CACHE, cache)
+            _update_health_many(base, {f: ("ok" if result.get(f) is not None else "missing", result.get(f))
+                                       for f in TRACKED_FUND_FIELDS}, "afx.kwayisi.org")
+            _cache_set(FUND_CACHE, base, result)
             print(f"[NSE] {base}: live fundamentals fetched ✓")
             return result
         else:
@@ -663,10 +690,8 @@ def get_fundamentals(ticker: str) -> dict:
                 cached["last_update"] = datetime.now().isoformat()
                 cached["fetch_ok"] = False
                 cached["data_source"] = "none"
-                cache[base] = cached
-                _save_cache(FUND_CACHE, cache)
-            for field in TRACKED_FUND_FIELDS:
-                _update_health(base, field, "failed", None, "afx.kwayisi.org")
+                _cache_set(FUND_CACHE, base, cached)
+            _update_health_many(base, {f: ("failed", None) for f in TRACKED_FUND_FIELDS}, "afx.kwayisi.org")
 
     # --- Tier 3: Seed fundamentals (always available) ---
     seed = _get_seed_fundamentals().get(base)
@@ -698,9 +723,8 @@ def get_fundamentals(ticker: str) -> dict:
             "fetch_ok":      True,
         }
         # Track health
-        for field in TRACKED_FUND_FIELDS:
-            val = result.get(field)
-            _update_health(base, field, "ok" if val is not None else "missing", val, "seed_fy2024")
+        _update_health_many(base, {f: ("ok" if result.get(f) is not None else "missing", result.get(f))
+                                   for f in TRACKED_FUND_FIELDS}, "seed_fy2024")
         return result
 
     # --- Absolute fallback: empty record ---

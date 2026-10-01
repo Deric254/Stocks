@@ -976,7 +976,7 @@ class CSVDataManager:
         job) can log what actually happened without guessing.
         """
         today = datetime.now().date().isoformat()
-        added, skipped_no_price, skipped_duplicate = [], [], []
+        added, skipped_no_price, skipped_duplicate, skipped_stale = [], [], [], []
 
         # Serializes the WHOLE mutate+persist sequence against other
         # concurrent calls to this function — see docstring above.
@@ -987,6 +987,23 @@ class CSVDataManager:
                     if price is None or price <= 0:
                         skipped_no_price.append(base_ticker)
                         continue
+
+                    # ACCURACY GUARD: the scraper hands back placeholder
+                    # ("manual_stub") or old cached prices when live fetch
+                    # fails. Recording those as "today's close" would pollute
+                    # history with fake data points dated today. Only a price
+                    # actually fetched today may be stamped as today's.
+                    if entry.get("source") == "manual_stub" or entry.get("stale") is True:
+                        skipped_stale.append(base_ticker)
+                        continue
+                    ts = str(entry.get("updated_at") or "")
+                    if ts and ts != "manual":
+                        try:
+                            if datetime.fromisoformat(ts).date().isoformat() != today:
+                                skipped_stale.append(base_ticker)
+                                continue
+                        except ValueError:
+                            pass
 
                     existing_dates = {str(row.get("date", "")) for row in self._price_history.get(base_ticker, [])}
                     if today in existing_dates:
@@ -1044,104 +1061,162 @@ class CSVDataManager:
             "added": added,
             "skipped_no_price": skipped_no_price,
             "skipped_duplicate": skipped_duplicate,
+            "skipped_stale": skipped_stale,
             "total_added": len(added),
         }
 
-    def refresh_all_data(self, tickers: list) -> dict:
-        """
-        The 'Update Data' button's backend — a full, on-demand data
-        refresh across both prices and fundamentals, for every
-        tracked ticker. Runs the SAME logic that would otherwise wait
-        for the daily background snapshot, on demand.
+    # Fields that describe the *fetch*, not the company. They must never be
+    # copied over real data or counted as an "improvement" (previously every
+    # successful scrape overwrote data_source/last_update and looked like a
+    # change even when no actual number changed).
+    _LIVE_META_KEYS = frozenset({"ticker", "last_update", "data_source", "data_stale", "fetch_ok"})
 
-        Consistency / accuracy / integrity, concretely:
-          - Live-scraped data wins when it returns something real,
-            because it's the freshest source available.
-          - A ticker's EXISTING value is preserved whenever live has
-            nothing for that field — this refresh only ever adds or
-            improves data, it never regresses good data to blank.
-          - Missing fields are derived ONLY from other real values
-            already present in that same ticker's row (the same
-            formulas used in the manually-researched NSE data
-            sourcing report: margin = net_income/revenue, eps=price/pe
-            or pe=price/eps, dividend_yield=dividends/price or the
-            reverse). A derived value is real arithmetic on real
-            numbers, never a fabricated placeholder — a field with no
-            real number anywhere to derive it from stays honestly
-            empty.
-          - Every derived field is recorded in that row's data_source
-            note, so it's always traceable which numbers are directly
-            sourced vs computed — full audit trail, not a black box.
+    def refresh_all_data(self, tickers: list, progress=None,
+                         deadline_s: float = 240.0, workers: int = 8) -> dict:
         """
+        The 'Update Data' button's backend: refresh prices and fundamentals
+        for every tracked ticker.
+
+        Speed / reliability (why it no longer hangs):
+          - Prices: ONE bulk fetch for the whole market, not one per ticker.
+          - Fundamentals: fetched in parallel (``workers`` threads) instead
+            of one-by-one, and no per-ticker price re-fetch.
+          - A hard overall deadline (``deadline_s``). Tickers still running
+            at the deadline are reported as timed out and keep their
+            existing data - the run finishes and saves instead of hanging.
+          - Everything is written to disk ONCE at the end (even on deadline).
+
+        Consistency / accuracy (unchanged guarantees, tightened):
+          - Live data wins only when it is a genuine live scrape; the
+            scraper's seed fallback is never treated as live.
+          - Existing values are never blanked; metadata fields are never
+            copied over real data.
+          - Missing fields are only derived from real values in the same row
+            (see _derive_fundamentals_row) and recorded in data_source.
+          - Stale / placeholder prices are never stamped as today's price.
+          - The report states plainly what happened, including when live
+            sources returned nothing.
+
+        ``progress(done, total, stage, current)`` is an optional callback
+        used by the status endpoint / UI progress bar.
+        """
+        import time
+        from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FutTimeout
         from services.nse_scraper import get_all_prices, get_fundamentals as scraper_get_fundamentals
 
+        def _progress(done, total, stage, current=""):
+            if progress:
+                try:
+                    progress(done, total, stage, current)
+                except Exception:
+                    pass
+
+        t0 = time.monotonic()
         report = {
             "started_at": datetime.now().isoformat(),
             "prices": None,
-            "fundamentals": {"tickers_improved": 0, "fields_derived": 0, "errors": []},
+            "fundamentals": {
+                "tickers_improved": 0, "fields_derived": 0, "errors": [],
+                "tickers_total": len(tickers), "tickers_live_ok": 0, "timed_out": [],
+            },
+            "warnings": [],
         }
 
-        # Prices — reuses the already-tested-safe snapshot mechanism,
-        # just triggered on demand instead of waiting for the 24h timer.
+        # ── 1. Prices: one bulk fetch ──────────────────────────────────
+        _progress(0, len(tickers), "prices")
         try:
             live_prices = get_all_prices()
             report["prices"] = self.snapshot_daily_prices(live_prices)
+            if report["prices"].get("total_added", 0) == 0 and report["prices"].get("skipped_stale"):
+                report["warnings"].append(
+                    "Live price source returned no fresh prices today - showing last known prices. "
+                    "Prices are NOT updated; upload a price CSV if you need today's values.")
         except Exception as e:
-            report["prices"] = {"available": False, "reason": str(e)}
+            report["prices"] = {"available": False, "reason": str(e), "total_added": 0}
+            report["warnings"].append(f"Price refresh failed: {e}")
 
         with _mem_lock:
             current_prices = dict(self._prices)
 
+        # ── 2. Fundamentals: parallel live fetch ───────────────────────
+        bases = [t["ticker"].split(".")[0].upper() for t in tickers]
+        total = len(bases)
+        live_results = {}   # base -> dict (genuine live data only)
+        done = 0
+
+        def _fetch(base):
+            try:
+                live = scraper_get_fundamentals(base, allow_price_fetch=False) or {}
+            except TypeError:
+                live = scraper_get_fundamentals(base) or {}
+            # Scraper's Tier-3 seed fallback is old placeholder data -
+            # never treat it as fresh live data.
+            if live.get("data_source") == "seed_fy2024":
+                return {}
+            return live
+
+        pool = ThreadPoolExecutor(max_workers=max(1, workers))
+        futures = {pool.submit(_fetch, b): b for b in bases}
+        try:
+            remaining = max(1.0, deadline_s - (time.monotonic() - t0))
+            for fut in as_completed(futures, timeout=remaining):
+                b = futures[fut]
+                try:
+                    live_results[b] = fut.result()
+                except Exception as e:
+                    live_results[b] = {}
+                    report["fundamentals"]["errors"].append(f"{b}: live fetch failed ({e})")
+                done += 1
+                _progress(done, total, "fundamentals", b)
+        except FutTimeout:
+            for fut, b in futures.items():
+                if b not in live_results:
+                    fut.cancel()
+                    report["fundamentals"]["timed_out"].append(b)
+            report["warnings"].append(
+                f"{len(report['fundamentals']['timed_out'])} tickers did not respond in time "
+                "and kept their existing data.")
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
+
+        # ── 3. Merge + derive (single thread, no races) ────────────────
         tickers_improved = 0
         fields_derived_total = 0
+        live_ok = 0
+        today = datetime.now().strftime("%Y-%m-%d")
 
-        for t in tickers:
-            base = t["ticker"].split(".")[0].upper()
-            try:
-                live = scraper_get_fundamentals(base) or {}
-                # The scraper's own Tier-3 fallback returns old,
-                # possibly-fabricated placeholder data tagged
-                # data_source="seed_fy2024" when live scraping fails -
-                # never treat that as fresh live data. Doing so would
-                # silently reintroduce exactly the fake-data
-                # contamination already found and fixed twice
-                # elsewhere in this codebase, just through a third
-                # path. Only a genuine live scrape should ever
-                # override existing real data here.
-                if live.get("data_source") == "seed_fy2024":
-                    live = {}
-            except Exception as e:
-                live = {}
-                report["fundamentals"]["errors"].append(f"{base}: live fetch failed ({e})")
+        for base in bases:
+            live = live_results.get(base) or {}
+            live_data = {k: v for k, v in live.items()
+                         if k not in self._LIVE_META_KEYS and v is not None and v != "" and v != []}
+            if live_data:
+                live_ok += 1
 
             with _mem_lock:
                 existing = dict(self._fundamentals.get(base, {}))
 
             merged = dict(existing)
             live_fields_applied = []
-            for k, v in live.items():
-                if v is not None and v != "" and v != []:
-                    if existing.get(k) != v:
-                        live_fields_applied.append(k)
-                    merged[k] = v  # freshest real data wins
+            for k, v in live_data.items():
+                if existing.get(k) != v:
+                    live_fields_applied.append(k)
+                merged[k] = v  # freshest real data wins
+
+            if live_fields_applied:
+                prev = (existing.get("data_source") or "").strip()
+                note = f"live {today} ({live.get('data_source', 'live')}): {', '.join(sorted(live_fields_applied))}"
+                merged["data_source"] = f"{prev} || {note}" if prev else note
 
             price_row = current_prices.get(base, {})
             merged["price"] = _safe_float(price_row.get("price"))
 
             derived_row, derived_fields = _derive_fundamentals_row(merged)
-            derived_row.pop("price", None)  # price lives in its own table, not stored inside fundamentals
+            derived_row.pop("price", None)  # price lives in its own table
 
-            # A ticker only counts as "improved" if something SUBSTANTIVE
-            # actually changed - a genuinely new live value, or a field
-            # that was successfully derived. Not a blunt whole-dict
-            # equality check, which can be tripped by incidental
-            # representation differences (e.g. field ordering, type
-            # round-tripping) that don't reflect any real data change -
-            # that would silently overcount "improvements" and bump
-            # last_update timestamps for tickers where nothing actually
-            # happened, misleading anyone auditing what this update did.
+            # "Improved" = a genuinely new live value or a derived field -
+            # not incidental differences.
             if live_fields_applied or derived_fields:
-                derived_row["last_update"] = datetime.now().strftime("%Y-%m-%d")
+                derived_row["last_update"] = today
                 derived_row["fetch_ok"] = True
                 derived_row["ticker"] = base
                 with _mem_lock:
@@ -1159,9 +1234,23 @@ class CSVDataManager:
 
         self._persist_fundamentals(fundamentals_snap, meta_snap)
 
-        report["fundamentals"]["tickers_improved"] = tickers_improved
-        report["fundamentals"]["fields_derived"] = fields_derived_total
+        f = report["fundamentals"]
+        f["tickers_improved"] = tickers_improved
+        f["fields_derived"] = fields_derived_total
+        f["tickers_live_ok"] = live_ok
+        if live_ok == 0:
+            report["warnings"].append(
+                "No live fundamentals were available from the data sources - existing data was left unchanged.")
+
+        prices_ok = report["prices"].get("total_added", 0) > 0 or bool(report["prices"].get("skipped_duplicate"))
+        if live_ok == 0 and not prices_ok:
+            report["status"] = "no_live_data"
+        elif report["warnings"]:
+            report["status"] = "partial"
+        else:
+            report["status"] = "complete"
         report["completed_at"] = datetime.now().isoformat()
+        report["duration_s"] = round(time.monotonic() - t0, 1)
         return report
 
 

@@ -840,25 +840,63 @@ def download_price_template(user: str = Depends(get_current_user)):
         headers={"Content-Disposition": "attachment; filename=nse_prices_template.csv"}
     )
 
+# ── Update Data: background job ───────────────────────────────────────────
+# The refresh contacts external sites for ~55 stocks. Doing that inside one
+# HTTP request is what made the button hang (browser + Render proxy time out
+# long before it finished). Instead: POST starts a background job and returns
+# immediately; the UI polls /api/data/update-status for live progress.
+_update_job = {"state": "idle"}
+_update_job_lock = threading.Lock()
+_UPDATE_JOB_MAX_AGE_S = 600  # a job "running" longer than this is considered dead
+
+
+def _job_snapshot() -> dict:
+    with _update_job_lock:
+        return dict(_update_job)
+
+
+def _run_update_job():
+    def _cb(done, total, stage, current):
+        with _update_job_lock:
+            _update_job.update(done=done, total=total, stage=stage, current=current)
+
+    try:
+        report = get_manager().refresh_all_data(NSE_TICKERS, progress=_cb)
+        with _update_job_lock:
+            _update_job.update(state="done", report=report, finished_at=datetime.now().isoformat())
+    except Exception as e:
+        with _update_job_lock:
+            _update_job.update(state="error", error=str(e), finished_at=datetime.now().isoformat())
+
+
 @app.post("/api/data/update-all")
 def update_all_data(user: str = Depends(get_current_user)):
     """
-    The 'Update Data' button. Triggers a full refresh across both
-    prices and fundamentals for every tracked ticker: live sources
-    first, existing good data preserved wherever live has nothing,
-    and any remaining gaps filled by safe cross-field derivation
-    (never fabricated from nothing - see
-    CSVDataManager.refresh_all_data / _derive_fundamentals_row for
-    the exact rules). This can take a while (up to ~1 minute for the
-    full ticker universe, since it attempts a live fetch per ticker)
-    - the frontend should show a loading state, not assume this
-    returns instantly.
+    The 'Update Data' button. Starts a full refresh (prices + fundamentals,
+    live sources first, existing good data preserved, gaps filled only by
+    safe derivation - see CSVDataManager.refresh_all_data) in the
+    background and returns immediately. Only one run at a time: pressing the
+    button again while one is running just returns the running job.
     """
-    try:
-        report = get_manager().refresh_all_data(NSE_TICKERS)
-        return report
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    with _update_job_lock:
+        running = _update_job.get("state") == "running"
+        age = time.time() - _update_job.get("started_ts", 0)
+        if running and age < _UPDATE_JOB_MAX_AGE_S:
+            return {**_update_job, "already_running": True}
+        _update_job.clear()
+        _update_job.update(
+            state="running", started_ts=time.time(),
+            started_at=datetime.now().isoformat(),
+            done=0, total=len(NSE_TICKERS), stage="starting", current="",
+        )
+    threading.Thread(target=_run_update_job, daemon=True).start()
+    return _job_snapshot()
+
+
+@app.get("/api/data/update-status")
+def update_status(user: str = Depends(get_current_user)):
+    """Progress / result of the latest Update Data run."""
+    return _job_snapshot()
 
 
 @app.get("/api/template/fundamentals")
