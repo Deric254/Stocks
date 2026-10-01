@@ -320,7 +320,7 @@ def generate_fundamentals_template(tickers: list, seed: dict) -> str:
     live_funds = {}
     try:
         from services.nse_scraper import get_fundamentals as scraper_get_fund
-        from concurrent.futures import ThreadPoolExecutor, as_completed
+        from concurrent.futures import ThreadPoolExecutor
 
         def _fetch(ticker_base):
             try:
@@ -824,22 +824,6 @@ class CSVDataManager:
         ts = self.get_upload_meta().get("fundamentals_last_upload")
         return _age_days(ts) if ts else 9999.0
 
-    def get_stale_fundamentals(self, tickers: list) -> list:
-        stale = []
-        with _mem_lock:
-            funds_snap = dict(self._fundamentals)
-        for t in tickers:
-            base = t["ticker"].split(".")[0].upper()
-            fund = funds_snap.get(base, {})
-            if not fund:
-                stale.append({"ticker": base, "reason": "no_data", "age_days": 9999})
-                continue
-            lu = fund.get("last_update", "")
-            age = _age_days(lu) if lu and lu != "never" else 9999
-            if age > 90:
-                stale.append({"ticker": base, "reason": "expired", "age_days": round(age)})
-        return stale
-
     def get_health_alerts(self, tickers: list) -> list:
         alerts = []
         price_age = self.get_prices_age_days()
@@ -1176,9 +1160,11 @@ class CSVDataManager:
                     state["oks"] += 1; state["fails"] = 0
                 else:
                     state["fails"] += 1
-                    # 6 failures in a row and not a single success: the source
-                    # is blocked or down - stop instead of waiting 55 times.
-                    if state["fails"] >= 6 and state["oks"] == 0:
+                    # One full round of parallel workers failing in a row with
+                    # not a single success: the source is blocked or down - stop
+                    # instead of waiting for every stock (was 6, i.e. a second
+                    # round of ~11s timeouts before giving up).
+                    if state["fails"] >= max(3, workers) and state["oks"] == 0:
                         state["abort"] = True
             return base, data, err
 

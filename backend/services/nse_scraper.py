@@ -23,10 +23,8 @@ import json
 import math
 import threading
 import requests
-import pandas as pd
-import numpy as np
 from bs4 import BeautifulSoup
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -67,14 +65,10 @@ FUND_CACHE    = CACHE_DIR / "fundamentals.json"
 HEALTH_CACHE  = CACHE_DIR / "data_health.json"
 
 PRICE_TTL       = 4 * 3600        # re-fetch prices after 4h
-FUND_TTL        = 24 * 3600       # re-fetch fundamentals after 24h
-FUND_RETRY_TTL  = 1 * 3600        # retry FAILED fund fetch after 1h (not 24h)
-FUND_EXPIRE_TTL = 7 * 24 * 3600   # fundamentals older than 7 days = expired
 STALE_TTL       = 7 * 24 * 3600   # serve stale prices up to 7 days
 
 # Fields we care about for scoring — tracked individually
 TRACKED_FUND_FIELDS = ["pe", "eps", "bvps", "roe", "dividend_yield", "dividends", "market_cap"]
-CRITICAL_FIELDS     = ["pe", "eps", "roe"]   # missing these degrades score most
 
 _lock = threading.Lock()
 
@@ -212,19 +206,6 @@ def _get(url: str, timeout=(5, 12)) -> Optional[str]:
 
 # ── Data health tracking ───────────────────────────────────────────────────
 
-def _update_health(ticker: str, field: str, status: str, value=None, source: str = ""):
-    """Track per-field data health. status: 'ok' | 'missing' | 'expired' | 'failed'"""
-    health = _load_cache(HEALTH_CACHE)
-    if ticker not in health:
-        health[ticker] = {}
-    health[ticker][field] = {
-        "status":     status,
-        "value":      value,
-        "source":     source,
-        "updated_at": datetime.now().isoformat(),
-    }
-    _save_cache(HEALTH_CACHE, health)
-
 def _update_health_many(ticker: str, results: dict, source: str = ""):
     """Record every field's health for one ticker with ONE disk write
     (the per-field version rewrote the whole health file 7x per ticker)."""
@@ -236,189 +217,103 @@ def _update_health_many(ticker: str, results: dict, source: str = ""):
             t[field] = {"status": status, "value": value, "source": source, "updated_at": now}
         _save_cache(HEALTH_CACHE, health)
 
-def get_data_health_report(tickers: list) -> dict:
-    """
-    Returns actionable data health report for all tickers.
-    Used by /api/data-health endpoint to show notifications.
-    """
-    health   = _load_cache(HEALTH_CACHE)
-    fund_cache = _load_cache(FUND_CACHE)
-    price_cache = _load_cache(PRICES_CACHE)
-
-    alerts    = []   # things that need attention
-    ok_count  = 0
-    warn_count = 0
-    crit_count = 0
-
-    for meta in tickers:
-        t    = meta["ticker"] if isinstance(meta, dict) else meta
-        base = t.split(".")[0].upper()
-
-        fund  = fund_cache.get(base, {})
-        price = price_cache.get(base, {})
-
-        # Price health
-        price_age_h = _age_hours(price.get("updated_at", "2000-01-01"))
-        price_src   = price.get("source", "none")
-        if price_src == "manual_stub":
-            alerts.append({
-                "ticker": base, "field": "price", "severity": "warning",
-                "message": f"{base}: Using reference price from March 2026 — live fetch failed",
-                "action": "Click Refresh on Data Status page",
-            })
-            warn_count += 1
-        elif price_age_h > 24:
-            alerts.append({
-                "ticker": base, "field": "price", "severity": "warning",
-                "message": f"{base}: Price is {price_age_h:.0f}h old",
-                "action": "Click Refresh on Data Status page",
-            })
-            warn_count += 1
-        else:
-            ok_count += 1
-
-        # Fundamentals health
-        fund_age_h  = _age_hours(fund.get("last_update", "2000-01-01"))
-        fund_source = fund.get("data_source", "none")
-
-        if fund_source == "none" or not fund:
-            alerts.append({
-                "ticker": base, "field": "fundamentals", "severity": "critical",
-                "message": f"{base}: No fundamental data at all — scoring will be 0",
-                "action": "Enter manually from company annual report",
-            })
-            crit_count += 1
-        elif fund_age_h > 168:  # 7 days
-            alerts.append({
-                "ticker": base, "field": "fundamentals", "severity": "warning",
-                "message": f"{base}: Fundamentals expired ({fund_age_h:.0f}h old)",
-                "action": "Click Force Refresh on Data Status page",
-            })
-            warn_count += 1
-
-        # Per-field missing checks
-        for field in CRITICAL_FIELDS:
-            val = fund.get(field)
-            if val is None:
-                severity = "critical" if field in CRITICAL_FIELDS else "info"
-                alerts.append({
-                    "ticker": base, "field": field, "severity": severity,
-                    "message": f"{base}: Missing {field.upper()} — score reduced",
-                    "action": f"Enter {field.upper()} manually via Data Status page",
-                })
-                if severity == "critical":
-                    crit_count += 1
-
-    # Deduplicate — max 3 alerts per ticker to avoid flooding
-    seen = {}
-    deduped = []
-    for a in alerts:
-        key = f"{a['ticker']}_{a['field']}"
-        if key not in seen:
-            seen[key] = True
-            deduped.append(a)
-
-    return {
-        "alerts":       deduped[:50],   # cap at 50
-        "ok_count":     ok_count,
-        "warn_count":   warn_count,
-        "crit_count":   crit_count,
-        "total_alerts": len(deduped),
-        "generated_at": datetime.now().isoformat(),
-    }
-
-
 # ── Source 1: kenyanstocks.com bulk prices ────────────────────────────────
+
+def _detect_columns(headers: list) -> dict:
+    """Map lower-cased header texts to {"price"|"change"|"volume": index}.
+    First match wins. "change" is tested before "price" so a "Price Change"
+    column is never mistaken for the price, and previous/open/high/low price
+    columns are never taken as the current price."""
+    cols = {}
+    for i, h in enumerate(headers):
+        if "change" in h or "chg" in h or "%" in h:
+            key = "change"
+        elif "vol" in h:
+            key = "volume"
+        elif "price" in h and not any(w in h for w in ("prev", "open", "high", "low")):
+            key = "price"
+        else:
+            continue
+        cols.setdefault(key, i)
+    return cols
+
 
 def _scrape_kenyanstocks_bulk() -> dict:
     """
-    Scrape kenyanstocks.com/stock — all NSE stocks in one request.
-    Table structure: Symbol | Company | Sector | Price (KES) | Change | Volume
-    Uses header detection to find correct price column — never guesses.
+    Scrape kenyanstocks.com/stock - all NSE stocks in one request.
+    The price table is found by its HEADER TEXT (it must have a Price column),
+    not by position on the page, and every column is located from that header.
+    Nothing is guessed: if no table has a Price column the status says so and
+    lists the headers that were seen.
     """
-    url = "https://kenyanstocks.com/stock"
-    html, err = _get_ex(url)
+    html, err = _get_ex("https://kenyanstocks.com/stock")
     if not html:
         print("[NSE] kenyanstocks.com: no response")
         LAST_STATUS["kenyanstocks.com"] = err or "no response"
         return {}
 
-    soup = BeautifulSoup(html, "html.parser")
-    results = {}
-    table = soup.find("table")
-    if not table:
+    tables = BeautifulSoup(html, "html.parser").find_all("table")
+    if not tables:
         print("[NSE] kenyanstocks.com: no table found")
         LAST_STATUS["kenyanstocks.com"] = ("page has no price table - the site now builds it with "
                                            "JavaScript, so a plain request cannot read it")
         return {}
 
-    all_rows = table.find_all("tr")
-    if not all_rows:
+    table, cols, seen = None, {}, []
+    for t in tables:
+        first = t.find("tr")
+        if first is None:
+            continue
+        headers = [c.get_text(strip=True).lower() for c in first.find_all(["th", "td"])]
+        seen.append(headers)
+        found = _detect_columns(headers)
+        if "price" in found:
+            table, cols = t, found
+            break
+    if table is None:
+        print("[NSE] kenyanstocks.com: no table with a Price column")
+        LAST_STATUS["kenyanstocks.com"] = (f"page loaded but no table has a Price column "
+                                           f"(headers seen: {seen[:3]})")
         return {}
 
-    # --- Detect column positions from header row ---
-    price_col = 3    # default: Symbol|Company|Sector|Price|Change|Volume
-    change_col = 4
-    volume_col = 5
-
-    header_row = all_rows[0]
-    headers = [th.get_text(strip=True).lower() for th in header_row.find_all(["th", "td"])]
-    if headers:
-        for i, h in enumerate(headers):
-            if "price" in h or "kes" in h:
-                price_col = i
-            elif "change" in h or "chg" in h or "%" in h:
-                change_col = i
-            elif "volume" in h or "vol" in h:
-                volume_col = i
-
-    data_rows = all_rows[1:]  # skip header
-
-    for row in data_rows:
-        cols = row.find_all(["td", "th"])
-        if len(cols) < 3:
+    price_col, change_col, volume_col = cols["price"], cols.get("change"), cols.get("volume")
+    results = {}
+    for row in table.find_all("tr")[1:]:
+        cells = row.find_all(["td", "th"])
+        if len(cells) <= price_col:
             continue
 
-        # Extract ticker from href (most reliable)
+        # Ticker from the link href (most reliable), else the first cell's text.
         ticker_raw = ""
-        link = cols[0].find("a")
+        link = cells[0].find("a")
         if link:
-            href = link.get("href", "")
-            parts = [p for p in href.split("/") if p and p not in ("stock", "nse")]
+            parts = [p for p in link.get("href", "").split("/") if p and p not in ("stock", "nse")]
             if parts:
                 ticker_raw = parts[-1].upper().strip()
         if not ticker_raw:
-            ticker_raw = cols[0].get_text(strip=True).upper().strip()
+            ticker_raw = cells[0].get_text(strip=True).upper().strip()
         if not re.match(r'^[A-Z&]{2,7}$', ticker_raw):
             continue
 
-        texts = [c.get_text(strip=True) for c in cols]
+        texts = [c.get_text(strip=True) for c in cells]
 
-        # --- Price: use detected column, validate it's a real price ---
-        price = None
-        if price_col < len(texts):
-            raw_price = texts[price_col].replace(",", "").replace("KES", "").strip()
-            # Handle K suffix (e.g. 6.27 K for GLD ETF = 6,270)
-            if raw_price.upper().endswith("K"):
-                p = _safe(raw_price[:-1])
-                if p: raw_price = str(p * 1000)
-            p = _safe(raw_price)
-            if p and 0.10 < p < 100000:
-                price = p
-        if not price:
+        # Price: handles a K suffix (e.g. 6.27 K for the GLD ETF = 6,270).
+        raw_price = texts[price_col].replace(",", "").replace("KES", "").strip()
+        if raw_price.upper().endswith("K"):
+            p = _safe(raw_price[:-1])
+            raw_price = str(p * 1000) if p else raw_price
+        price = _safe(raw_price)
+        if not price or not 0.10 < price < 100000:
             continue
 
-        # --- Change %: must be in change column, strip + and % ---
         change_pct = None
-        if change_col < len(texts):
-            raw_chg = texts[change_col].replace("+", "").replace("%", "").strip()
-            c = _safe(raw_chg)
+        if change_col is not None and change_col < len(texts):
+            c = _safe(texts[change_col].replace("+", "").replace("%", "").strip())
             if c is not None and -50 < c < 50:   # realistic daily change range
                 change_pct = c
 
-        # --- Volume: handle K/M suffixes ---
         volume = None
-        if volume_col < len(texts):
+        if volume_col is not None and volume_col < len(texts):
             raw_vol = texts[volume_col].upper().replace(" ", "").replace(",", "")
             raw_vol = re.sub(r"(\d+\.?\d*)K", lambda m: str(float(m.group(1)) * 1000), raw_vol)
             raw_vol = re.sub(r"(\d+\.?\d*)M", lambda m: str(float(m.group(1)) * 1e6), raw_vol)
@@ -426,17 +321,16 @@ def _scrape_kenyanstocks_bulk() -> dict:
             if v and v > 0:
                 volume = int(v)
 
-        results[ticker_raw] = {
-            "price": price, "change_pct": change_pct,
-            "volume": volume, "source": "kenyanstocks.com",
-            "confidence": "high",  # from header-detected columns
-        }
+        results[ticker_raw] = {"price": price, "change_pct": change_pct,
+                               "volume": volume, "source": "kenyanstocks.com"}
 
     if results:
-        LAST_STATUS["kenyanstocks.com"] = "ok"
+        LAST_STATUS["kenyanstocks.com"] = f"ok - {len(results)} stocks read"
         print(f"[NSE] kenyanstocks.com: {len(results)} stocks ✓ (price col={price_col})")
     else:
-        print("[NSE] kenyanstocks.com: 0 stocks parsed — page structure may have changed")
+        LAST_STATUS["kenyanstocks.com"] = (f"page loaded and a price table was found, but 0 rows could be "
+                                           f"read (headers: {seen[-1]})")
+        print("[NSE] kenyanstocks.com: 0 stocks parsed - page structure may have changed")
     return results
 
 
@@ -541,8 +435,11 @@ def _scrape_mystocks_price(ticker_base: str) -> Optional[float]:
 def get_all_prices() -> dict:
     """Bulk fetch all NSE prices from kenyanstocks.com. Cache 4h."""
     cache = _load_cache(PRICES_CACHE)
-    sample = next(iter(cache.values()), None) if cache else None
-    if sample and _age_seconds(sample.get("updated_at", "2000-01-01")) < PRICE_TTL:
+    # Fresh when the newest bulk-sourced entry is within the TTL. (Judging by
+    # the first dict entry made freshness depend on insertion order.)
+    newest = min((_age_seconds(e.get("updated_at", "2000-01-01"))
+                  for e in cache.values() if e.get("source") == "kenyanstocks.com"), default=None)
+    if newest is not None and newest < PRICE_TTL:
         print(f"[NSE] Prices from cache ({len(cache)} stocks)")
         return cache
 
@@ -741,35 +638,3 @@ def get_fundamentals(ticker: str, allow_price_fetch: bool = True) -> dict:
         "data_source": "none", "data_stale": True, "fetch_ok": False,
     }
 
-
-def get_price_history(ticker: str, days: int = 365) -> pd.DataFrame:
-    """
-    Price DataFrame. Current price = REAL live price.
-    History = synthetic random walk anchored to real price.
-    (Free NSE historical OHLCV does not exist — requires paid subscription.)
-    """
-    base  = ticker.split(".")[0].upper()
-    entry = get_price(ticker)
-    price = entry.get("price", 0)
-    if price <= 0:
-        return pd.DataFrame()
-
-    np.random.seed(hash(base) % 2**31)
-    n = days
-    returns = np.random.normal(0, 0.012, n)
-    prices  = [price]
-    for r in returns:
-        prices.append(prices[-1] * (1 - r))
-    prices = list(reversed(prices[1:]))
-
-    dates = pd.date_range(end=datetime.now().date(), periods=n, freq="B")
-    df = pd.DataFrame({
-        "open":   [p * (1 - abs(np.random.normal(0, 0.005))) for p in prices],
-        "high":   [p * (1 + abs(np.random.normal(0, 0.008))) for p in prices],
-        "low":    [p * (1 - abs(np.random.normal(0, 0.008))) for p in prices],
-        "close":  prices,
-        "volume": [int(abs(np.random.normal(500000, 200000))) for _ in prices],
-    }, index=dates)
-    df.index.name = "date"
-    df["synthetic"] = True
-    return df
