@@ -180,6 +180,24 @@ def _safe_float(v) -> Optional[float]:
         return None
 
 
+def _price_is_fresh_today(entry: dict, today: str, require_ts: bool = True) -> bool:
+    """True for a price actually fetched today. Placeholder ("manual_stub")
+    and older cached prices are not fresh. With require_ts=False an entry
+    that carries no timestamp at all is given the benefit of the doubt (used
+    when recording prices handed in directly)."""
+    if not entry or entry.get("source") == "manual_stub" or entry.get("stale") is True:
+        return False
+    ts = str(entry.get("updated_at") or "")
+    if ts == "manual":
+        return False
+    if not ts:
+        return not require_ts
+    try:
+        return datetime.fromisoformat(ts).date().isoformat() == today
+    except ValueError:
+        return False
+
+
 def _derive_fundamentals_row(fund: dict) -> tuple:
     """
     Fills gaps in a single fundamentals row using ONLY arithmetic on
@@ -988,22 +1006,11 @@ class CSVDataManager:
                         skipped_no_price.append(base_ticker)
                         continue
 
-                    # ACCURACY GUARD: the scraper hands back placeholder
-                    # ("manual_stub") or old cached prices when live fetch
-                    # fails. Recording those as "today's close" would pollute
-                    # history with fake data points dated today. Only a price
-                    # actually fetched today may be stamped as today's.
-                    if entry.get("source") == "manual_stub" or entry.get("stale") is True:
+                    # ACCURACY GUARD: placeholder / old cached prices must never
+                    # be stamped as today's close (see _price_is_fresh_today).
+                    if not _price_is_fresh_today(entry, today, require_ts=False):
                         skipped_stale.append(base_ticker)
                         continue
-                    ts = str(entry.get("updated_at") or "")
-                    if ts and ts != "manual":
-                        try:
-                            if datetime.fromisoformat(ts).date().isoformat() != today:
-                                skipped_stale.append(base_ticker)
-                                continue
-                        except ValueError:
-                            pass
 
                     existing_dates = {str(row.get("date", "")) for row in self._price_history.get(base_ticker, [])}
                     if today in existing_dates:
@@ -1065,44 +1072,59 @@ class CSVDataManager:
             "total_added": len(added),
         }
 
-    # Fields that describe the *fetch*, not the company. They must never be
-    # copied over real data or counted as an "improvement" (previously every
-    # successful scrape overwrote data_source/last_update and looked like a
-    # change even when no actual number changed).
-    _LIVE_META_KEYS = frozenset({"ticker", "last_update", "data_source", "data_stale", "fetch_ok"})
+    # Price-driven ratios: recomputed from the fresh price and the SAME stored
+    # EPS / dividend, so they always agree with the researched numbers.
+    def _reprice(self, row: dict, price, today: str) -> list:
+        changed = []
+        if not price or price <= 0:
+            return changed
+        eps = _safe_float(row.get("eps"))
+        if eps and eps > 0:
+            pe = round(price / eps, 2)
+            if row.get("pe") != pe:
+                row["pe"] = pe; changed.append("pe")
+        div = _safe_float(row.get("dividends"))
+        if div and div > 0:
+            dy = round(div / price, 4)
+            if row.get("dividend_yield") != dy:
+                row["dividend_yield"] = dy; changed.append("dividend_yield")
+        bv = _safe_float(row.get("bvps"))
+        if bv and bv > 0:
+            pb = round(price / bv, 2)
+            if row.get("pb") != pb:
+                row["pb"] = pb; changed.append("pb")
+        return changed
 
     def refresh_all_data(self, tickers: list, progress=None,
-                         deadline_s: float = 240.0, workers: int = 8) -> dict:
+                         deadline_s: float = 180.0, workers: int = 4) -> dict:
         """
-        The 'Update Data' button's backend: refresh prices and fundamentals
-        for every tracked ticker.
+        The 'Update Data' button's backend.
 
-        Speed / reliability (why it no longer hangs):
-          - Prices: ONE bulk fetch for the whole market, not one per ticker.
-          - Fundamentals: fetched in parallel (``workers`` threads) instead
-            of one-by-one, and no per-ticker price re-fetch.
-          - A hard overall deadline (``deadline_s``). Tickers still running
-            at the deadline are reported as timed out and keep their
-            existing data - the run finishes and saves instead of hanging.
-          - Everything is written to disk ONCE at the end (even on deadline).
+        Sources: one live page per stock (afx.kwayisi.org: current price,
+        EPS, P/E, dividend, yield, market cap), plus the kenyanstocks.com
+        bulk table when it is readable.
 
-        Consistency / accuracy (unchanged guarantees, tightened):
-          - Live data wins only when it is a genuine live scrape; the
-            scraper's seed fallback is never treated as live.
-          - Existing values are never blanked; metadata fields are never
-            copied over real data.
-          - Missing fields are only derived from real values in the same row
-            (see _derive_fundamentals_row) and recorded in data_source.
-          - Stale / placeholder prices are never stamped as today's price.
-          - The report states plainly what happened, including when live
-            sources returned nothing.
+        Never hangs: short timeouts, parallel fetch, a circuit breaker that
+        stops after repeated failures ("source blocked/unreachable"), and a
+        hard overall deadline. Everything is saved once at the end.
 
-        ``progress(done, total, stage, current)`` is an optional callback
-        used by the status endpoint / UI progress bar.
+        Consistency / accuracy rules:
+          - Your uploaded / researched fundamentals are authoritative. Live
+            data only FILLS fields that are empty; it never overwrites them
+            (different sources use different EPS bases - mixing them would
+            make a stock's numbers disagree with each other).
+          - P/E, dividend yield and P/B are recomputed from the fresh price
+            and the stored EPS / dividend / book value, so they stay
+            consistent with the current price.
+          - Only a price fetched today is recorded as today's price.
+          - Existing values are never blanked; derived fields are traceable
+            in data_source.
+          - The report says plainly what each source returned and why.
         """
         import time
         from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FutTimeout
-        from services.nse_scraper import get_all_prices, get_fundamentals as scraper_get_fundamentals
+        from collections import Counter
+        from services import nse_scraper as scraper
 
         def _progress(done, total, stage, current=""):
             if progress:
@@ -1112,49 +1134,55 @@ class CSVDataManager:
                     pass
 
         t0 = time.monotonic()
+        now_iso = datetime.now().isoformat()
+        today = datetime.now().strftime("%Y-%m-%d")
+        bases = [t["ticker"].split(".")[0].upper() for t in tickers]
+        total = len(bases)
+
         report = {
-            "started_at": datetime.now().isoformat(),
+            "started_at": now_iso,
             "prices": None,
-            "fundamentals": {
-                "tickers_improved": 0, "fields_derived": 0, "errors": [],
-                "tickers_total": len(tickers), "tickers_live_ok": 0, "timed_out": [],
-            },
+            "fundamentals": {"tickers_improved": 0, "fields_derived": 0, "errors": [],
+                             "tickers_total": total, "tickers_live_ok": 0, "timed_out": []},
+            "source_status": {},
             "warnings": [],
         }
 
-        # ── 1. Prices: one bulk fetch ──────────────────────────────────
-        _progress(0, len(tickers), "prices")
+        # 1. Bulk price table (fast, one request). May be unreadable.
+        _progress(0, total, "prices")
+        bulk = {}
         try:
-            live_prices = get_all_prices()
-            report["prices"] = self.snapshot_daily_prices(live_prices)
-            if report["prices"].get("total_added", 0) == 0 and report["prices"].get("skipped_stale"):
-                report["warnings"].append(
-                    "Live price source returned no fresh prices today - showing last known prices. "
-                    "Prices are NOT updated; upload a price CSV if you need today's values.")
+            bulk = scraper.get_all_prices() or {}
         except Exception as e:
-            report["prices"] = {"available": False, "reason": str(e), "total_added": 0}
-            report["warnings"].append(f"Price refresh failed: {e}")
+            report["warnings"].append(f"Bulk price fetch failed: {e}")
+        fresh_bulk = {b: e for b, e in bulk.items() if _price_is_fresh_today(e, today)}
 
-        with _mem_lock:
-            current_prices = dict(self._prices)
-
-        # ── 2. Fundamentals: parallel live fetch ───────────────────────
-        bases = [t["ticker"].split(".")[0].upper() for t in tickers]
-        total = len(bases)
-        live_results = {}   # base -> dict (genuine live data only)
-        done = 0
+        # 2. One live page per stock, in parallel, with a circuit breaker.
+        state = {"fails": 0, "oks": 0, "abort": False}
+        state_lock = threading.Lock()
+        errors = Counter()
+        quotes = {}
 
         def _fetch(base):
+            with state_lock:
+                if state["abort"]:
+                    return base, {}, "skipped"
             try:
-                live = scraper_get_fundamentals(base, allow_price_fetch=False) or {}
-            except TypeError:
-                live = scraper_get_fundamentals(base) or {}
-            # Scraper's Tier-3 seed fallback is old placeholder data -
-            # never treat it as fresh live data.
-            if live.get("data_source") == "seed_fy2024":
-                return {}
-            return live
+                data, err = scraper.fetch_live_quote(base)
+            except Exception as e:
+                data, err = {}, f"{type(e).__name__}: {str(e)[:80]}"
+            with state_lock:
+                if data:
+                    state["oks"] += 1; state["fails"] = 0
+                else:
+                    state["fails"] += 1
+                    # 6 failures in a row and not a single success: the source
+                    # is blocked or down - stop instead of waiting 55 times.
+                    if state["fails"] >= 6 and state["oks"] == 0:
+                        state["abort"] = True
+            return base, data, err
 
+        done = 0
         pool = ThreadPoolExecutor(max_workers=max(1, workers))
         futures = {pool.submit(_fetch, b): b for b in bases}
         try:
@@ -1162,60 +1190,91 @@ class CSVDataManager:
             for fut in as_completed(futures, timeout=remaining):
                 b = futures[fut]
                 try:
-                    live_results[b] = fut.result()
+                    _, data, err = fut.result()
                 except Exception as e:
-                    live_results[b] = {}
-                    report["fundamentals"]["errors"].append(f"{b}: live fetch failed ({e})")
+                    data, err = {}, str(e)
+                quotes[b] = data
+                if not data and err and err != "skipped":
+                    errors[err] += 1
                 done += 1
                 _progress(done, total, "fundamentals", b)
         except FutTimeout:
             for fut, b in futures.items():
-                if b not in live_results:
+                if b not in quotes:
                     fut.cancel()
                     report["fundamentals"]["timed_out"].append(b)
             report["warnings"].append(
-                f"{len(report['fundamentals']['timed_out'])} tickers did not respond in time "
+                f"{len(report['fundamentals']['timed_out'])} stocks did not answer in time "
                 "and kept their existing data.")
         finally:
             pool.shutdown(wait=False, cancel_futures=True)
 
-        # ── 3. Merge + derive (single thread, no races) ────────────────
+        live_ok = sum(1 for d in quotes.values() if d)
+        if state["abort"]:
+            top = errors.most_common(1)[0][0] if errors else "no response"
+            report["warnings"].append(
+                f"afx.kwayisi.org is not reachable from the server ({top}). Stopped after repeated "
+                "failures instead of waiting; existing data was left unchanged.")
+        elif errors:
+            top, n = errors.most_common(1)[0]
+            report["warnings"].append(f"{sum(errors.values())} stocks could not be fetched (mostly: {top}).")
+
+        report["source_status"] = {
+            "kenyanstocks.com (bulk prices)": scraper.LAST_STATUS.get("kenyanstocks.com", "not checked"),
+            "afx.kwayisi.org (per stock)": f"{live_ok}/{total} stocks read" + (
+                f"; errors: {dict(errors)}" if errors else ""),
+        }
+
+        # 3. Record today's prices: bulk where fresh, else the live page price.
+        prices_today = dict(fresh_bulk)
+        for b, d in quotes.items():
+            if b not in prices_today and d.get("price"):
+                prices_today[b] = {"price": d["price"], "source": "afx.kwayisi.org",
+                                   "updated_at": now_iso, "volume": 0}
+        try:
+            report["prices"] = self.snapshot_daily_prices(prices_today)
+        except Exception as e:
+            report["prices"] = {"available": False, "reason": str(e), "total_added": 0}
+            report["warnings"].append(f"Price save failed: {e}")
+        if not prices_today:
+            report["warnings"].append(
+                "No fresh prices were available today - showing last known prices. "
+                "Upload a price CSV if you need today's values.")
+
+        with _mem_lock:
+            current_prices = dict(self._prices)
+
+        # 4. Merge: fill gaps only, reprice ratios, derive the rest.
         tickers_improved = 0
         fields_derived_total = 0
-        live_ok = 0
-        today = datetime.now().strftime("%Y-%m-%d")
-
         for base in bases:
-            live = live_results.get(base) or {}
-            live_data = {k: v for k, v in live.items()
-                         if k not in self._LIVE_META_KEYS and v is not None and v != "" and v != []}
-            if live_data:
-                live_ok += 1
-
+            live = quotes.get(base) or {}
             with _mem_lock:
                 existing = dict(self._fundamentals.get(base, {}))
-
             merged = dict(existing)
-            live_fields_applied = []
-            for k, v in live_data.items():
-                if existing.get(k) != v:
-                    live_fields_applied.append(k)
-                merged[k] = v  # freshest real data wins
 
-            if live_fields_applied:
-                prev = (existing.get("data_source") or "").strip()
-                note = f"live {today} ({live.get('data_source', 'live')}): {', '.join(sorted(live_fields_applied))}"
-                merged["data_source"] = f"{prev} || {note}" if prev else note
+            filled = []
+            for k in ("eps", "pe", "dividends", "dividend_yield", "market_cap"):
+                v = live.get(k)
+                if v is not None and merged.get(k) in (None, "", []):
+                    merged[k] = v
+                    filled.append(k)
 
-            price_row = current_prices.get(base, {})
-            merged["price"] = _safe_float(price_row.get("price"))
+            price = _safe_float((current_prices.get(base) or {}).get("price"))
+            repriced = self._reprice(merged, price, today) if (price and (live or fresh_bulk.get(base))) else []
 
+            merged["price"] = price
             derived_row, derived_fields = _derive_fundamentals_row(merged)
-            derived_row.pop("price", None)  # price lives in its own table
+            derived_row.pop("price", None)
 
-            # "Improved" = a genuinely new live value or a derived field -
-            # not incidental differences.
-            if live_fields_applied or derived_fields:
+            if filled or repriced or derived_fields:
+                notes = []
+                if filled:
+                    notes.append(f"live {today} (afx.kwayisi.org) filled: {', '.join(filled)}")
+                if repriced:
+                    notes.append(f"repriced {today} from current price: {', '.join(repriced)}")
+                prev = (derived_row.get("data_source") or "").strip()
+                derived_row["data_source"] = " || ".join([x for x in [prev] + notes if x])
                 derived_row["last_update"] = today
                 derived_row["fetch_ok"] = True
                 derived_row["ticker"] = base
@@ -1231,19 +1290,15 @@ class CSVDataManager:
             })
             fundamentals_snap = dict(self._fundamentals)
             meta_snap = dict(self._meta)
-
         self._persist_fundamentals(fundamentals_snap, meta_snap)
 
         f = report["fundamentals"]
         f["tickers_improved"] = tickers_improved
         f["fields_derived"] = fields_derived_total
         f["tickers_live_ok"] = live_ok
-        if live_ok == 0:
-            report["warnings"].append(
-                "No live fundamentals were available from the data sources - existing data was left unchanged.")
 
-        prices_ok = report["prices"].get("total_added", 0) > 0 or bool(report["prices"].get("skipped_duplicate"))
-        if live_ok == 0 and not prices_ok:
+        priced = report["prices"].get("total_added", 0) > 0 or bool(report["prices"].get("skipped_duplicate"))
+        if live_ok == 0 and not priced:
             report["status"] = "no_live_data"
         elif report["warnings"]:
             report["status"] = "partial"

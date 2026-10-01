@@ -175,15 +175,39 @@ def _safe(v, d=None):
     except Exception:
         return d
 
-def _get(url: str, timeout: int = 15) -> Optional[str]:
-    try:
-        r = requests.get(url, headers=_headers(), timeout=timeout)
-        if r.status_code == 200:
-            return r.text
-        print(f"[NSE] HTTP {r.status_code} → {url}")
-    except Exception as e:
-        print(f"[NSE] GET failed {url}: {e}")
-    return None
+# Last outcome per source, so the Update report can say WHY a source gave
+# nothing (blocked, timed out, page layout changed) instead of just "no data".
+LAST_STATUS: dict = {}
+
+def _get_ex(url: str, timeout=(5, 12), attempts: int = 2):
+    """GET with a short connect timeout and one retry. Returns (html, error).
+    Never waits long on a dead/blocked source."""
+    import time as _t
+    host = url.split("/")[2] if "//" in url else url
+    err = "unknown error"
+    for i in range(attempts):
+        try:
+            r = requests.get(url, headers=_headers(), timeout=timeout)
+            if r.status_code == 200:
+                LAST_STATUS[host] = "ok"
+                return r.text, None
+            err = f"HTTP {r.status_code}"
+            print(f"[NSE] {err} -> {url}")
+            if r.status_code in (403, 404):      # retrying will not help
+                break
+        except requests.exceptions.Timeout:
+            err = "timed out"
+        except Exception as e:
+            err = f"{type(e).__name__}: {str(e)[:80]}"
+        if i + 1 < attempts:
+            _t.sleep(1.0)
+    LAST_STATUS[host] = err
+    print(f"[NSE] GET failed {url}: {err}")
+    return None, err
+
+def _get(url: str, timeout=(5, 12)) -> Optional[str]:
+    html, _ = _get_ex(url, timeout=timeout)
+    return html
 
 
 # ── Data health tracking ───────────────────────────────────────────────────
@@ -313,9 +337,10 @@ def _scrape_kenyanstocks_bulk() -> dict:
     Uses header detection to find correct price column — never guesses.
     """
     url = "https://kenyanstocks.com/stock"
-    html = _get(url)
+    html, err = _get_ex(url)
     if not html:
         print("[NSE] kenyanstocks.com: no response")
+        LAST_STATUS["kenyanstocks.com"] = err or "no response"
         return {}
 
     soup = BeautifulSoup(html, "html.parser")
@@ -323,6 +348,8 @@ def _scrape_kenyanstocks_bulk() -> dict:
     table = soup.find("table")
     if not table:
         print("[NSE] kenyanstocks.com: no table found")
+        LAST_STATUS["kenyanstocks.com"] = ("page has no price table - the site now builds it with "
+                                           "JavaScript, so a plain request cannot read it")
         return {}
 
     all_rows = table.find_all("tr")
@@ -406,6 +433,7 @@ def _scrape_kenyanstocks_bulk() -> dict:
         }
 
     if results:
+        LAST_STATUS["kenyanstocks.com"] = "ok"
         print(f"[NSE] kenyanstocks.com: {len(results)} stocks ✓ (price col={price_col})")
     else:
         print("[NSE] kenyanstocks.com: 0 stocks parsed — page structure may have changed")
@@ -414,109 +442,83 @@ def _scrape_kenyanstocks_bulk() -> dict:
 
 # ── Source 2: afx.kwayisi.org per-stock ───────────────────────────────────
 
-def _scrape_afx(ticker_base: str) -> dict:
-    """Scrape afx.kwayisi.org — price + PE, EPS, ROE, dividends, book value, market cap."""
-    url = f"https://afx.kwayisi.org/nse/{ticker_base.lower()}.html"
-    html = _get(url, timeout=15)
-    if not html:
-        return {}
+_NUM = r'(-?[\d,]*\.?\d+)\s?([%BMKT]?)(?![A-Za-z])'
+_AFX_LABELS = {
+    "eps":            r'(?i:earnings per share)',
+    "pe":             r'(?i:price/earning ratio)',
+    "dividends":      r'(?i:dividend per share)',
+    "dividend_yield": r'(?i:dividend yield)',
+    "market_cap":     r'(?i:market capitali[sz]ation)',
+}
+_MULT = {"": 1.0, "K": 1e3, "M": 1e6, "B": 1e9, "T": 1e12}
 
-    soup = BeautifulSoup(html, "html.parser")
+
+def _parse_afx_html(html: str) -> dict:
+    """
+    Parse one afx.kwayisi.org stock page. Reads the page text by its LABELS
+    (never by position) and converts units to what the rest of the app uses:
+    dividend_yield as a fraction (2.5% -> 0.025), market_cap in absolute KES.
+
+    Two bugs fixed vs the old parser:
+      * the old code took the first row containing "price" - that is
+        "Opening Price", NOT the current price. The current price now comes
+        from the page's own "current share price ... is KES X" sentence.
+      * the old code looked for the label "p/e", but the site says
+        "Price/Earning Ratio", so PE was never found; EPS, dividends, yield
+        and market cap were never parsed at all.
+    A field that is blank on the page stays absent - nothing is guessed.
+    """
+    text = BeautifulSoup(html, "html.parser").get_text(" ", strip=True)
     data = {}
 
-    # Parse all key-value tables
-    for table in soup.find_all("table"):
-        for row in table.find_all("tr"):
-            cols = row.find_all(["td", "th"])
-            if len(cols) < 2:
-                continue
-            key = cols[0].get_text(strip=True).lower()
-            val = cols[1].get_text(strip=True)
+    m = re.search(r'current share price of .{3,160}? is KES\s*([\d,]+\.?\d*)', text, re.S | re.I)
+    if m:
+        p = _safe(m.group(1))
+        if p and 0.1 < p < 100000:
+            data["price"] = p
 
-            if ("price" in key or "close" in key or "last" in key) and "price" not in data:
-                p = _safe(val)
-                if p and 0.1 < p < 100000:
-                    data["price"] = p
-            elif "p/e" in key and "pe" not in data:
-                p = _safe(val)
-                if p and p > 0:
-                    data["pe"] = p
-            elif "eps" in key and "eps" not in data:
-                p = _safe(val)
-                if p is not None:
-                    data["eps"] = p
-            elif "dividend yield" in key and "dividend_yield" not in data:
-                p = _safe(val)
-                if p is not None:
-                    data["dividend_yield"] = p / 100 if p > 1 else p
-            elif "dividend" in key and "dividends" not in data and "yield" not in key:
-                p = _safe(val)
-                if p is not None:
-                    data["dividends"] = p
-            elif "book value" in key and "bvps" not in data:
-                p = _safe(val)
-                if p and p > 0:
-                    data["bvps"] = p
-            elif "market cap" in key and "market_cap" not in data:
-                t = re.sub(r'(?i)B$', 'e9', val.strip())
-                t = re.sub(r'(?i)M$', 'e6', t)
-                t = re.sub(r'(?i)T$', 'e12', t)
-                p = _safe(t)
-                if p and p > 0:
-                    data["market_cap"] = p
-            elif "roe" in key and "roe" not in data:
-                p = _safe(val)
-                if p is not None:
-                    data["roe"] = p / 100 if abs(p) > 1 else p
-            elif "volume" in key and "volume" not in data:
-                t = val.upper().replace("K", "000").replace("M", "000000")
-                p = _safe(t)
-                if p and p > 0:
-                    data["volume"] = int(p)
+    for field, label in _AFX_LABELS.items():
+        m = re.search(label + r'\s*' + _NUM, text)
+        if not m:
+            continue
+        v = _safe(m.group(1))
+        if v is None:
+            continue
+        suffix = m.group(2)
+        if suffix == "%":
+            v = v / 100.0
+        elif suffix in _MULT:
+            v = v * _MULT[suffix]
+        if field == "pe" and not (0 < v < 1000):
+            continue
+        if field == "dividend_yield" and not (0 <= v < 1):
+            continue
+        if field == "market_cap" and v <= 0:
+            continue
+        data[field] = v
 
-    # Fallback price from text if table didn't yield it
-    if "price" not in data:
-        text = soup.get_text(separator="\n")
-        for line in text.split("\n"):
-            p = _safe(line.strip())
-            if p and 1 < p < 100000:
-                data["price"] = p
-                break
-
-    # History tables
-    rev_h, ni_h, dps_h = [], [], []
-    for table in soup.find_all("table"):
-        ths = [th.get_text(strip=True).lower() for th in table.find_all("th")]
-        rows = table.find_all("tr")[1:]
-        if any("revenue" in h or "turnover" in h for h in ths):
-            for row in rows:
-                cells = [td.get_text(strip=True) for td in row.find_all("td")]
-                if len(cells) >= 2:
-                    v = _safe(cells[1])
-                    if v is not None:
-                        rev_h.append(v)
-        if any("income" in h or "profit" in h or "earn" in h for h in ths):
-            for row in rows:
-                cells = [td.get_text(strip=True) for td in row.find_all("td")]
-                if len(cells) >= 2:
-                    v = _safe(cells[1])
-                    if v is not None:
-                        ni_h.append(v)
-        if any("dividend" in h or "dps" in h for h in ths):
-            for row in rows:
-                cells = [td.get_text(strip=True) for td in row.find_all("td")]
-                if len(cells) >= 2:
-                    v = _safe(cells[1])
-                    if v is not None:
-                        dps_h.append(v)
-
-    data["revenue_history"]    = rev_h[-5:]
-    data["net_income_history"] = ni_h[-5:]
-    data["dps_history"]        = dps_h[-5:]
-
-    if data.get("price") or any(data.get(f) is not None for f in ["pe", "eps", "roe"]):
+    if data:
         data["source"] = "afx.kwayisi.org"
     return data
+
+
+def fetch_live_quote(ticker_base: str):
+    """One request -> (data, error). data has price + whatever fundamentals
+    the page shows; error says why it is empty (HTTP 403, timed out,
+    layout changed...)."""
+    url = f"https://afx.kwayisi.org/nse/{ticker_base.lower()}.html"
+    html, err = _get_ex(url)
+    if not html:
+        return {}, err
+    data = _parse_afx_html(html)
+    if not data:
+        return {}, "page loaded but no price/fundamentals found (site layout may have changed)"
+    return data, None
+
+
+def _scrape_afx(ticker_base: str) -> dict:
+    """afx.kwayisi.org per-stock quote (kept for existing callers)."""
+    return fetch_live_quote(ticker_base)[0]
 
 
 # ── Source 3: mystocks.co.ke fallback price ────────────────────────────────

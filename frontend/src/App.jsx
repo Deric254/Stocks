@@ -1594,6 +1594,9 @@ function DataFreshness({onToast, focusTicker=null, focusField=null}){
           <div>Prices: {updateAllResult.prices?.total_added ?? 0} tickers refreshed today, {updateAllResult.prices?.skipped_duplicate?.length ?? 0} already up to date</div>
           <div>Fundamentals: {updateAllResult.fundamentals?.tickers_improved ?? 0} tickers improved, {updateAllResult.fundamentals?.fields_derived ?? 0} fields filled via derivation ({updateAllResult.fundamentals?.tickers_live_ok ?? 0} of {updateAllResult.fundamentals?.tickers_total ?? 0} had live data)</div>
           {updateAllResult.warnings?.map((w,i)=><div key={i} style={{color:C.orange,marginTop:4}}>⚠ {w}</div>)}
+          {updateAllResult.source_status&&Object.entries(updateAllResult.source_status).map(([k,v])=>(
+            <div key={k} style={{color:C.muted,marginTop:2}}>Source · {k}: {v}</div>
+          ))}
           {updateAllResult.duration_s!=null&&<div style={{color:C.muted,marginTop:4}}>Finished in {updateAllResult.duration_s}s</div>}
           {updateAllResult.fundamentals?.errors?.length>0&&<div style={{color:C.orange,marginTop:4}}>{updateAllResult.fundamentals.errors.length} tickers had a live-fetch issue (existing data preserved, nothing lost)</div>}
         </div>

@@ -128,13 +128,10 @@ def test_refresh_all_data_never_lets_scraper_seed_fallback_overwrite_real_data(t
 
         # simulate the scraper's own seed-fallback tier firing (as it
         # does whenever every live source is blocked/unreachable)
-        def fake_scraper_get_fundamentals(base):
-            return {
-                "ticker": base, "eps": 999.0, "net_income_history": [1, 2, 3],
-                "data_source": "seed_fy2024",  # the exact tag that must be rejected
-            }
-
-        monkeypatch.setattr("services.nse_scraper.get_fundamentals", fake_scraper_get_fundamentals)
+        # Live fetch fails (blocked/unreachable). The refresh must keep real
+        # data and must never substitute old placeholder/seed numbers.
+        monkeypatch.setattr("services.nse_scraper.fetch_live_quote",
+                            lambda base: ({}, "HTTP 403"))
         monkeypatch.setattr("services.nse_scraper.get_all_prices", lambda: {})
 
         report = mgr.refresh_all_data([{"ticker": "EQTY", "sector": "Banking"}])
