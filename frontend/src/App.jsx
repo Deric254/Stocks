@@ -2,7 +2,9 @@ import { useState, useEffect, useCallback, useRef } from "react";
 
 // Works locally (localhost:8000) AND when hosted on Render/Railway
 // To deploy: set VITE_API_URL env variable in your hosting dashboard
-const API = import.meta.env.VITE_API_URL || "http://localhost:8000";
+// "" (set empty by the release build) means same origin - the packaged app serves the API and the UI
+// from one address. Unset keeps the local-dev default; a hosted build sets the full URL.
+const API = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
 
 // ── AUTH TOKEN STORAGE ────────────────────────────────────────────────────
 // The backend requires "Authorization: Bearer <token>" on almost every route.

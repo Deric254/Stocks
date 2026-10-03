@@ -179,9 +179,19 @@ jobs:
 
       - name: Build frontend
         working-directory: frontend
+        env:
+          # The packaged app serves the UI and the API from ONE address, so the UI must call
+          # the same origin. Without this, Vite picks up the committed frontend/.env.production
+          # (a hosted-server placeholder) and the app would call a server that does not exist.
+          # A shell variable beats .env files, so the hosted (Vercel) build is not affected.
+          VITE_API_URL: ""
         run: |
           npm ci
           npm run build
+          if grep -rq "YOUR-RENDER-APP" dist; then
+            echo "::error::A placeholder API URL was baked into the frontend build"; exit 1
+          fi
+          test -f dist/index.html
 
       - name: Copy frontend build into backend bundle location
         shell: bash
@@ -227,6 +237,28 @@ jobs:
           else
             mv "${{ matrix.build_name }}" "${{ matrix.artifact_name }}"
           fi
+
+      - name: Smoke-test the executable (it must serve the UI at /)
+        shell: bash
+        working-directory: backend/dist
+        run: |
+          set -e
+          chmod +x "./${{ matrix.artifact_name }}" || true
+          PORT=18765 "./${{ matrix.artifact_name }}" > smoke.log 2>&1 &
+          PID=$!
+          ready=0
+          for i in $(seq 1 60); do
+            if curl -fsS "http://127.0.0.1:18765/api/ping" >/dev/null 2>&1; then ready=1; break; fi
+            sleep 2
+          done
+          if [ "$ready" != 1 ]; then echo "::error::executable did not start"; cat smoke.log; kill $PID || true; exit 1; fi
+          PAGE=$(curl -fsS http://127.0.0.1:18765/)
+          echo "$PAGE" | grep -q 'id="root"' || { echo "::error::/ did not serve the frontend"; echo "$PAGE" | head -c 300; kill $PID || true; exit 1; }
+          ASSET=$(echo "$PAGE" | grep -o '/assets/[^"]*\.js' | head -1)
+          curl -fsS "http://127.0.0.1:18765$ASSET" -o /dev/null || { echo "::error::bundled JS not served"; kill $PID || true; exit 1; }
+          curl -fsS http://127.0.0.1:18765/api/ping >/dev/null
+          kill $PID || true
+          echo "Executable serves the UI and the API."
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4

@@ -13,6 +13,9 @@ build/
 node_modules/
 frontend/dist/
 
+# The release build copies the built frontend here at build time - never commit a duplicate
+backend/frontend/
+
 # Data caches (will regenerate — don't commit stale data)
 backend/data/nse_cache/
 backend/data/*.tmp

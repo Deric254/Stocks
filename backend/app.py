@@ -327,9 +327,16 @@ class ResetPasswordRequest(BaseModel):
 
 # ── Health & keep-alive ────────────────────────────────────────────────────
 
-@app.get("/")
-def root():
-    return {"message": "Stock Intel API v5", "status": "running", "mode": "manual_csv"}
+# The packaged executable ships the built frontend (see release.yml); the hosted API does not.
+# Decided up front because the FIRST route registered for "/" wins: serving the API banner at "/"
+# used to shadow the bundled UI, so the release opened to JSON instead of the app.
+_static_dir = _app_base_path() / "frontend" / "dist"
+_HAS_BUNDLED_UI = (_static_dir / "index.html").is_file()
+
+if not _HAS_BUNDLED_UI:
+    @app.get("/")
+    def root():
+        return {"message": "Stock Intel API v5", "status": "running", "mode": "manual_csv"}
 
 @app.get("/api/version")
 def get_version():
@@ -1478,9 +1485,9 @@ def remove_watchlist(req: WatchlistRequest, user: str = Depends(get_current_user
 # to shadow an /api/* route. In normal local dev (npm run dev on its own
 # port) this directory won't exist and the mount is silently skipped;
 # only the PyInstaller build ships frontend/dist alongside the exe.
-_static_dir = _app_base_path() / "frontend" / "dist"
-if _static_dir.exists():
-    app.mount("/assets", StaticFiles(directory=str(_static_dir / "assets")), name="assets")
+if _HAS_BUNDLED_UI:
+    if (_static_dir / "assets").is_dir():
+        app.mount("/assets", StaticFiles(directory=str(_static_dir / "assets")), name="assets")
 
     @app.get("/{full_path:path}")
     def serve_frontend(full_path: str):
@@ -1494,8 +1501,9 @@ if _static_dir.exists():
         errors from any client integration checking status codes."""
         if full_path.startswith("api/"):
             raise HTTPException(status_code=404, detail=f"Not found: /{full_path}")
-        requested = _static_dir / full_path
-        if full_path and requested.exists() and requested.is_file():
+        requested = (_static_dir / full_path).resolve()
+        # resolve() + is_relative_to: "../" in the URL must never read files outside dist/
+        if full_path and requested.is_file() and requested.is_relative_to(_static_dir.resolve()):
             return FileResponse(requested)
         return FileResponse(_static_dir / "index.html")
 
