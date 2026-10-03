@@ -1443,6 +1443,7 @@ function DataFreshness({onToast, focusTicker=null, focusField=null}){
   useEffect(()=>{
     get("/api/data/update-status").then(j=>{
       if(j.state==="running"){ setUpdatingAll(true); setUpdateProgress(j); pollRef.current=setTimeout(pollUpdate,1500); }
+      else if(j.state==="done" && j.report){ setUpdateAllResult(j.report); }   // last finished run survives a page reload
     }).catch(()=>{});
     return ()=>clearTimeout(pollRef.current);
   },[]);
@@ -1470,7 +1471,10 @@ function DataFreshness({onToast, focusTicker=null, focusField=null}){
     }
   },[focusTicker, data]);
 
+  const [downloading, setDownloading] = useState(null);
   const downloadTemplate = async (type) => {
+    if(downloading) return;
+    setDownloading(type);
     try{
       const r = await fetch(`${API}/api/template/${type}`,{headers:authHeaders()});
       if(!r.ok) throw new Error(String(r.status));
@@ -1482,6 +1486,40 @@ function DataFreshness({onToast, focusTicker=null, focusField=null}){
       a.click();
       setTimeout(()=>URL.revokeObjectURL(url),1000);
     }catch(e){ onToast("Download failed","error"); }
+    finally{ setDownloading(null); }
+  };
+
+  // Accept only a real .csv file (drop with no file / a wrong type used to post `undefined`)
+  const csvFormData = (file) => {
+    if(!file){ return null; }
+    if(!/\.csv$/i.test(file.name)){ onToast("Please choose a .csv file","error"); return null; }
+    const fd = new FormData(); fd.append("file", file); return fd;
+  };
+
+  // ── Test live sources FROM THE SERVER (read-only) ──
+  const [sourceCheck, setSourceCheck] = useState(null);
+  const [checking, setChecking] = useState(false);
+  const runSourceCheck = async () => {
+    setChecking(true); setSourceCheck(null);
+    try{ setSourceCheck(await fetchTimeout(`${API}/api/data-sources/check`,{},90000)); }
+    catch(e){ onToast(e.message||"Test failed","error"); }
+    finally{ setChecking(false); }
+  };
+
+  // ── Paste prices: preview first, save only what the preview showed ──
+  const [pasteText, setPasteText] = useState("");
+  const [pastePreview, setPastePreview] = useState(null);
+  const [pasteBusy, setPasteBusy] = useState(false);
+  const runPaste = async (confirm, acceptSuspect=false) => {
+    setPasteBusy(true);
+    try{
+      const d = await post("/api/upload/paste-prices",{text:pasteText,confirm,accept_suspect:acceptSuspect});
+      if(confirm){
+        if(d.saved){ onToast(`${d.saved_count} prices saved for ${d.date}`,"info"); setPasteText(""); setPastePreview(null); load(); }
+        else onToast(d.error||"Nothing was saved","error");
+      } else setPastePreview(d);
+    }catch(e){ onToast(e.message||"Could not read the pasted text","error"); setPastePreview(null); }
+    finally{ setPasteBusy(false); }
   };
 
   const handleUploadPrices = async (formData) => {
@@ -1591,7 +1629,7 @@ function DataFreshness({onToast, focusTicker=null, focusField=null}){
       {updateAllResult&&(
         <div style={{...card,marginBottom:20,fontSize:12,color:C.textMid}}>
           <div style={{fontWeight:700,marginBottom:6,color:C.text}}>Last update result</div>
-          <div>Prices: {updateAllResult.prices?.total_added ?? 0} tickers refreshed today, {updateAllResult.prices?.skipped_duplicate?.length ?? 0} already up to date</div>
+          <div>Prices: {updateAllResult.prices?.total_added ?? 0} tickers refreshed{updateAllResult.market?` for ${updateAllResult.market.trade_date}`:""}, {updateAllResult.prices?.skipped_duplicate?.length ?? 0} already up to date{updateAllResult.prices?.provisional?" · live (provisional until the close)":""}</div>
           <div>Fundamentals: {updateAllResult.fundamentals?.tickers_improved ?? 0} tickers improved, {updateAllResult.fundamentals?.fields_derived ?? 0} fields filled via derivation ({updateAllResult.fundamentals?.tickers_live_ok ?? 0} of {updateAllResult.fundamentals?.tickers_total ?? 0} had live data)</div>
           {updateAllResult.warnings?.map((w,i)=><div key={i} style={{color:C.orange,marginTop:4}}>⚠ {w}</div>)}
           {updateAllResult.source_status&&Object.entries(updateAllResult.source_status).map(([k,v])=>(
@@ -1601,6 +1639,78 @@ function DataFreshness({onToast, focusTicker=null, focusField=null}){
           {updateAllResult.fundamentals?.errors?.length>0&&<div style={{color:C.orange,marginTop:4}}>{updateAllResult.fundamentals.errors.length} tickers had a live-fetch issue (existing data preserved, nothing lost)</div>}
         </div>
       )}
+
+      {/* ── Source self-test ── */}
+      <div style={{...card,border:"1.5px solid "+C.borderGray,marginBottom:16}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,flexWrap:"wrap"}}>
+          <div>
+            <div style={{fontSize:14,fontWeight:800,color:C.text}}>Test live sources</div>
+            <div style={{fontSize:11,color:C.muted}}>Checks, from the server, whether automatic price updates can work. Saves nothing.</div>
+          </div>
+          <button onClick={runSourceCheck} disabled={checking}
+            style={{padding:"8px 16px",borderRadius:8,border:"1.5px solid "+C.green,background:"transparent",color:C.green,
+              fontWeight:700,fontSize:12,cursor:"pointer",fontFamily:"inherit"}}>{checking?"Testing…":"Run test"}</button>
+        </div>
+        {sourceCheck && (
+          <div style={{marginTop:12,fontSize:12}}>
+            <div style={{fontWeight:800,marginBottom:6,color:sourceCheck.verdict==="ready"?"#15803d":sourceCheck.verdict==="degraded"?"#b45309":"#b91c1c"}}>
+              {sourceCheck.verdict==="ready"?"✅ READY":sourceCheck.verdict==="degraded"?"⚠️ ONE SOURCE ONLY":"⛔ BLOCKED"} — {sourceCheck.advice}
+            </div>
+            {sourceCheck.sources.map(x=>(
+              <div key={x.source} style={{padding:"3px 0",color:x.ok?C.text:"#b45309"}}>
+                {x.ok?"✓":"✗"} <b>{x.source}</b> <span style={{color:C.muted}}>({x.kind})</span> — {x.detail}
+                {x.sample&&Object.keys(x.sample).length>0?` · ${Object.entries(x.sample).map(([k,v])=>k+" "+v).join(", ")}`:""}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* ── Paste prices (works with no server network access at all) ── */}
+      <div style={{...card,border:"1.5px solid "+C.borderGray,marginBottom:16}}>
+        <div style={{fontSize:14,fontWeight:800,color:C.text,marginBottom:4}}>Paste prices from a website</div>
+        <div style={{fontSize:11,color:C.muted,marginBottom:10}}>
+          Open any NSE price page in your browser, select the table, copy, and paste it here. Or type one stock per line, e.g. <b>SCOM 36.40</b>.
+          You review a preview before anything is saved.
+        </div>
+        <textarea value={pasteText} onChange={e=>{setPasteText(e.target.value);setPastePreview(null);}}
+          placeholder={"SCOM 36.40\nEQTY 105.50\n…or paste the whole table"} rows={4}
+          style={{width:"100%",boxSizing:"border-box",padding:10,borderRadius:8,border:"1.5px solid "+C.borderGray,
+            fontFamily:"inherit",fontSize:12,resize:"vertical"}}/>
+        <button onClick={()=>runPaste(false)} disabled={pasteBusy||!pasteText.trim()}
+          style={{marginTop:8,padding:"8px 16px",borderRadius:8,border:"1.5px solid "+C.green,background:"transparent",
+            color:C.green,fontWeight:700,fontSize:12,cursor:"pointer",fontFamily:"inherit"}}>
+          {pasteBusy?"Reading…":"Preview"}
+        </button>
+        {pastePreview && (()=>{
+          const ok=pastePreview.rows.filter(r=>r.status==="ok"), bad=pastePreview.rows.filter(r=>r.status!=="ok");
+          return (
+            <div style={{marginTop:12,fontSize:12}}>
+              <div style={{fontWeight:700,marginBottom:6}}>{ok.length} prices ready for {pastePreview.date}{bad.length?`, ${bad.length} held back`:""}</div>
+              <div style={{maxHeight:200,overflowY:"auto",border:"1px solid "+C.borderGray,borderRadius:8}}>
+                {pastePreview.rows.map(r=>(
+                  <div key={r.ticker} style={{display:"flex",justifyContent:"space-between",padding:"4px 10px",
+                    background:r.status==="ok"?"transparent":"#fff4e5",color:r.status==="ok"?C.text:"#b45309"}}>
+                    <span style={{fontWeight:700}}>{r.ticker}</span>
+                    <span>{r.price}{r.previous!=null?`  (was ${r.previous}, ${r.change_pct>0?"+":""}${r.change_pct}%)`:"  (new)"}{r.status!=="ok"?"  ⚠ implausible move":""}</span>
+                  </div>
+                ))}
+              </div>
+              {pastePreview.conflicts.length>0 && <div style={{color:"#b45309",marginTop:6}}>Skipped, pasted with two different prices: {pastePreview.conflicts.join(", ")}</div>}
+              <div style={{display:"flex",gap:8,marginTop:10}}>
+                <button onClick={()=>runPaste(true)} disabled={pasteBusy||!ok.length}
+                  style={{padding:"8px 16px",borderRadius:8,border:"none",background:C.green,color:"#fff",fontWeight:700,fontSize:12,cursor:"pointer",fontFamily:"inherit"}}>
+                  Save {ok.length} prices
+                </button>
+                {bad.length>0 && <button onClick={()=>runPaste(true,true)} disabled={pasteBusy}
+                  style={{padding:"8px 16px",borderRadius:8,border:"1.5px solid #b45309",background:"transparent",color:"#b45309",fontWeight:700,fontSize:12,cursor:"pointer",fontFamily:"inherit"}}>
+                  Save all incl. {bad.length} flagged (e.g. after a split)
+                </button>}
+              </div>
+            </div>
+          );
+        })()}
+      </div>
 
       {/* ── Two upload panels ── */}
       <div className="stat-grid" style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16,marginBottom:20}}>
@@ -1621,16 +1731,16 @@ function DataFreshness({onToast, focusTicker=null, focusField=null}){
               </div>
             )}
           </div>
-          <button onClick={()=>downloadTemplate("prices")}
+          <button onClick={()=>downloadTemplate("prices")} disabled={!!downloading}
             style={{width:"100%",padding:"8px 0",borderRadius:8,border:"1.5px solid "+C.green,background:"transparent",
               color:C.green,fontWeight:700,fontSize:12,cursor:"pointer",fontFamily:"inherit",marginBottom:10}}>
-            Download Template (all stocks pre-loaded, just fill price)
+            {downloading==="prices"?"Preparing…":"Download Template (all stocks listed; today's prices pre-filled where available)"}
           </button>
           <div
             onDragOver={e=>{e.preventDefault();e.currentTarget.style.background=C.greenBg;}}
             onDragLeave={e=>{e.currentTarget.style.background="#fafafa";}}
             onDrop={e=>{e.preventDefault();e.currentTarget.style.background="#fafafa";
-              const fd=new FormData();fd.append("file",e.dataTransfer.files[0]);handleUploadPrices(fd);}}
+              const fd=csvFormData(e.dataTransfer.files[0]);if(fd)handleUploadPrices(fd);}}
             onClick={()=>document.getElementById("price-inp").click()}
             style={{border:"2px dashed "+C.borderGray,borderRadius:10,padding:"18px",textAlign:"center",
               cursor:"pointer",background:"#fafafa",transition:"background .15s"}}>
@@ -1638,7 +1748,7 @@ function DataFreshness({onToast, focusTicker=null, focusField=null}){
               {uploadingPrice?"Uploading...":"Drop CSV here or click to browse"}
             </div>
             <input id="price-inp" type="file" accept=".csv" style={{display:"none"}}
-              onChange={e=>{const fd=new FormData();fd.append("file",e.target.files[0]);handleUploadPrices(fd);e.target.value="";}}/>
+              onChange={e=>{const fd=csvFormData(e.target.files[0]);if(fd)handleUploadPrices(fd);e.target.value="";}}/>
           </div>
           {ps?.last_upload&&ps.last_upload!=="never"&&(
             <div style={{fontSize:10,color:C.dim,marginTop:8}}>
@@ -1663,16 +1773,16 @@ function DataFreshness({onToast, focusTicker=null, focusField=null}){
               </div>
             )}
           </div>
-          <button onClick={()=>downloadTemplate("fundamentals")}
+          <button onClick={()=>downloadTemplate("fundamentals")} disabled={!!downloading}
             style={{width:"100%",padding:"8px 0",borderRadius:8,border:"1.5px dashed "+C.blue,background:"transparent",
               color:C.blue,fontWeight:700,fontSize:12,cursor:"pointer",fontFamily:"inherit",marginBottom:10}}>
-            Download Fundamentals Template (pre-filled)
+            {downloading==="fundamentals"?"Preparing…":"Download Fundamentals Template (pre-filled from your data)"}
           </button>
           <div
             onDragOver={e=>{e.preventDefault();e.currentTarget.style.background=C.blueLt;}}
             onDragLeave={e=>{e.currentTarget.style.background="#fafafa";}}
             onDrop={e=>{e.preventDefault();e.currentTarget.style.background="#fafafa";
-              const fd=new FormData();fd.append("file",e.dataTransfer.files[0]);handleUploadFundamentals(fd);}}
+              const fd=csvFormData(e.dataTransfer.files[0]);if(fd)handleUploadFundamentals(fd);}}
             onClick={()=>document.getElementById("fund-inp").click()}
             style={{border:"2px dashed "+C.borderGray,borderRadius:10,padding:"18px",textAlign:"center",
               cursor:uploadingFund?"wait":"pointer",background:"#fafafa",transition:"background .15s"}}>
@@ -1681,7 +1791,7 @@ function DataFreshness({onToast, focusTicker=null, focusField=null}){
               {uploadingFund?"Uploading & validating...":"Drop CSV or click to upload"}
             </div>
             <input id="fund-inp" type="file" accept=".csv" style={{display:"none"}}
-              onChange={e=>{const fd=new FormData();fd.append("file",e.target.files[0]);handleUploadFundamentals(fd);e.target.value="";}}/>
+              onChange={e=>{const fd=csvFormData(e.target.files[0]);if(fd)handleUploadFundamentals(fd);e.target.value="";}}/>
           </div>
           {fs?.last_upload&&fs.last_upload!=="never"&&(
             <div style={{fontSize:10,color:C.dim,marginTop:8}}>

@@ -62,14 +62,16 @@ def _cache(entries):
 
 def test_cache_freshness_ignores_dict_order(monkeypatch):
     # Old entry first, fresh bulk entry second: must be served from cache.
-    cache = _cache({"OLD": ("afx.kwayisi.org", 50), "NEW": ("kenyanstocks.com", 1)})
+    cache = _cache({"OLD": ("afx.kwayisi.org", 50), "NEW": ("kenyanstocks.com", 0.1)})
     monkeypatch.setattr(s, "_load_cache", lambda p: cache)
     monkeypatch.setattr(s, "_scrape_kenyanstocks_bulk", lambda: (_ for _ in ()).throw(AssertionError("refetched")))
+    monkeypatch.setattr(s, "_scrape_mansa", lambda: (_ for _ in ()).throw(AssertionError("refetched")))
     assert s.get_all_prices() is cache
 
 
 def test_stale_bulk_cache_triggers_refetch(monkeypatch):
     cache = _cache({"A": ("kenyanstocks.com", 9)})
+    monkeypatch.setattr(s, "_scrape_mansa", lambda: {})
     monkeypatch.setattr(s, "_load_cache", lambda p: cache)
     monkeypatch.setattr(s, "_save_cache", lambda p, d: None)
     monkeypatch.setattr(s, "_scrape_kenyanstocks_bulk", lambda: {"A": {"price": 5.0, "change_pct": None, "volume": None}})

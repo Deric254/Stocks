@@ -57,7 +57,7 @@ def test_live_fills_gaps_but_never_overwrites_researched_values(tmp_path, monkey
     mgr = _mgr(tmp_path, monkeypatch)
     mgr._fundamentals["EQTY"] = {"ticker": "EQTY", "eps": 19.0, "pe": 3.0, "dividends": 5.0,
                                  "data_source": "real_upload"}
-    _patch(monkeypatch, lambda base: ({"price": 76.0, "eps": 999.0, "pe": 1.0,
+    _patch(monkeypatch, lambda base: ({"price": 76.0, "eps": 999.0, "pe": 0.0761,
                                        "market_cap": 2.8e11, "source": "afx.kwayisi.org"}, None))
     mgr.refresh_all_data([{"ticker": "EQTY"}])
     row = mgr._fundamentals["EQTY"]

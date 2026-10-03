@@ -57,16 +57,6 @@ def _cache_set(key, value):
     _CACHE[key] = {"value": value, "ts": time.time()}
 
 
-def _wrap(value, source, confidence="High", note=None):
-    return {
-        "value": value,
-        "source": source,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "confidence": confidence,
-        "note": note,
-    }
-
-
 def _unavailable(reason, source):
     return {
         "value": None,

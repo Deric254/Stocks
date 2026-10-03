@@ -10,7 +10,8 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from typing import Optional
-import uvicorn, math, threading, os, time, sys
+import logging, math, threading, os, time, sys
+import uvicorn
 import pandas as pd
 from pathlib import Path
 from datetime import datetime, timezone
@@ -20,7 +21,7 @@ from services.data_loader import DataLoader
 from services.scoring import ScoringEngine
 from services.portfolio import PortfolioManager
 from services.analytics import AnalyticsEngine
-from services.csv_data_manager import get_manager, generate_price_template, generate_fundamentals_template
+from services.csv_data_manager import get_manager, generate_price_template, generate_fundamentals_template, _parse_date
 from services.technical import compute_technical
 from services.valuation import compute_valuation
 from services.risk import compute_portfolio_risk
@@ -99,39 +100,43 @@ def _start_keep_alive():
     threading.Thread(target=_loop, daemon=True).start()
 
 
-def _run_daily_price_snapshot():
-    """
-    Runs the real-price-history-accumulation job (see
-    CSVDataManager.snapshot_daily_prices for the ACID guarantees).
-    Deliberately called in a background thread from startup, never
-    on the request path — a scraper call across 55 tickers can take
-    a few seconds, and the app must be responsive immediately, not
-    after that finishes. Failure here is non-fatal: if the scraper
-    is unreachable (e.g. no internet in this environment), the app
-    keeps running normally on whatever history already exists.
-    """
-    try:
-        from services.nse_scraper import get_all_prices
-        live_prices = get_all_prices()  # internally cached ~4h — cheap to call often
-        if not live_prices:
-            print("[snapshot] scraper returned no prices — skipping (app continues normally)")
-            return
-        result = get_manager().snapshot_daily_prices(live_prices)
-        print(f"[snapshot] {result['date']}: added {result['total_added']} tickers "
-              f"({len(result['skipped_duplicate'])} already had today, "
-              f"{len(result['skipped_no_price'])} had no valid price)")
-    except Exception as e:
-        print(f"[snapshot] failed (non-fatal, app continues normally): {e}")
+_SNAPSHOT_POLL_S = 300        # how often the scheduler looks at the clock
+_SNAPSHOT_RETRY_S = 1200      # wait this long after a failed attempt
+
+
+def _record_final_close() -> str:
+    """Save the official close for the latest trading day if it is not saved yet.
+    Returns 'not_due', 'done' or 'failed'. Safe to call any time and any number of times."""
+    from services.nse_scraper import get_all_prices, market_clock
+    state, trade_date = market_clock()
+    mgr = get_manager()
+    day = trade_date.isoformat()
+    if state != "closed" or mgr.final_snapshot_done(day):
+        return "not_due"
+    live_prices = get_all_prices(max_age_s=0)        # never settle for a cached mid-session price
+    result = mgr.snapshot_daily_prices(live_prices, provisional=False)
+    print(f"[snapshot] {day}: added {len(result['added'])}, finalised {len(result['updated'])}, "
+          f"{len(result['skipped_duplicate'])} already had it, {len(result['skipped_suspect'])} held back")
+    if result["total_added"] or result["skipped_duplicate"]:
+        mgr.mark_final_snapshot(day)
+        return "done"
+    return "failed"
 
 
 def _start_daily_snapshot_thread():
-    """Runs once immediately at startup, then once every 24h — not
-    request-triggered, so it never adds latency to anything a user
-    is waiting on."""
+    """Background scheduler: after the market closes on each trading day, save the official
+    close - retrying every 20 minutes until it succeeds (a single failed attempt used to
+    mean no data for 24 hours). Catches up on its own if the server was asleep or
+    redeployed. Never on the request path."""
     def _loop():
+        wait = 30                  # first look shortly after startup (catch-up)
         while True:
-            _run_daily_price_snapshot()
-            time.sleep(24 * 3600)
+            time.sleep(wait or _SNAPSHOT_POLL_S)
+            try:
+                wait = _SNAPSHOT_RETRY_S if _record_final_close() == "failed" else 0
+            except Exception as e:
+                log.warning("daily close snapshot failed (will retry): %s", e)
+                wait = _SNAPSHOT_RETRY_S
     threading.Thread(target=_loop, daemon=True).start()
 
 
@@ -248,6 +253,14 @@ NSE_TICKERS = [
 ]
 
 _score_cache: dict = {}
+_NSE_SYMBOLS = frozenset(t["ticker"] for t in NSE_TICKERS)
+log = logging.getLogger("stockintel")
+
+
+def _internal_error(e: Exception) -> HTTPException:
+    """Log the real error server-side; return a generic 500 (raw exception text can leak internals)."""
+    log.exception("Unhandled error: %s", e)
+    return HTTPException(status_code=500, detail="Internal server error - see the server log")
 
 
 def _clean(val):
@@ -281,11 +294,6 @@ class MissingDataRequest(BaseModel):
 
 class WatchlistRequest(BaseModel):
     ticker: str
-
-class AlertRequest(BaseModel):
-    ticker: str
-    alert_type: str
-    threshold: float
 
 class ManualPriceRequest(BaseModel):
     ticker: str
@@ -433,7 +441,7 @@ def auth_register(req: RegisterRequest):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _internal_error(e)
 
 
 @app.post("/api/auth/login")
@@ -446,7 +454,7 @@ def auth_login(req: LoginRequest):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _internal_error(e)
 
 
 @app.post("/api/auth/logout")
@@ -457,7 +465,7 @@ def auth_logout(authorization: Optional[str] = Header(None)):
             auth.logout(token)
         return {"success": True}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _internal_error(e)
 
 
 @app.get("/api/auth/me")
@@ -480,7 +488,7 @@ def auth_get_security_questions(username: str):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _internal_error(e)
 
 
 @app.post("/api/auth/reset-password")
@@ -496,7 +504,7 @@ def auth_reset_password(req: ResetPasswordRequest):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _internal_error(e)
 
 
 @app.get("/api/ping")
@@ -612,7 +620,6 @@ def get_sectors(user: str = Depends(get_current_user)):
 
 @app.get("/api/stocks")
 def get_stocks(sector: str = "", sort: str = "score", user: str = Depends(get_current_user)):
-    global _score_cache
     tickers = NSE_TICKERS
     if sector:
         tickers = [t for t in NSE_TICKERS if t["sector"].lower() == sector.lower()]
@@ -724,7 +731,7 @@ def get_stock_recommendation(ticker: str, user: str = Depends(get_current_user))
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _internal_error(e)
 
 
 
@@ -825,7 +832,7 @@ def get_stock(ticker_raw: str, user: str = Depends(get_current_user)):
             "capital_flow":  capital_flow,
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _internal_error(e)
 
 
 # ── CSV Upload endpoints ───────────────────────────────────────────────────
@@ -929,7 +936,37 @@ async def upload_prices(file: UploadFile = File(...), user: str = Depends(get_cu
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _internal_error(e)
+
+@app.get("/api/data-sources/check")
+def check_data_sources(user: str = Depends(get_current_user)):
+    """Can THIS server reach the live price sources? Read-only; saves nothing."""
+    from services.nse_scraper import check_sources
+    try:
+        return check_sources()
+    except Exception as e:
+        raise _internal_error(e)
+
+
+class PastePricesRequest(BaseModel):
+    text: str
+    confirm: bool = False
+    accept_suspect: bool = False
+
+
+@app.post("/api/upload/paste-prices")
+def paste_prices(req: PastePricesRequest, user: str = Depends(get_current_user)):
+    """Prices pasted from a website. confirm=False -> preview only; confirm=True -> save."""
+    if len(req.text) > 300_000:
+        raise HTTPException(status_code=400, detail="Pasted text is too large")
+    try:
+        result = get_manager().import_pasted_prices(req.text, set(_NSE_SYMBOLS), req.confirm, req.accept_suspect)
+    except Exception as e:
+        raise _internal_error(e)
+    if not result["rows"] and not result["conflicts"]:
+        raise HTTPException(status_code=400, detail="No NSE tickers with prices were recognised in the pasted text.")
+    return result
+
 
 @app.post("/api/upload/fundamentals")
 async def upload_fundamentals(file: UploadFile = File(...), user: str = Depends(get_current_user)):
@@ -949,7 +986,7 @@ async def upload_fundamentals(file: UploadFile = File(...), user: str = Depends(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _internal_error(e)
 
 @app.get("/api/upload/status")
 def upload_status(user: str = Depends(get_current_user)):
@@ -981,7 +1018,7 @@ def data_freshness(user: str = Depends(get_current_user)):
     try:
         return {"freshness": loader.get_data_freshness(NSE_TICKERS)}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _internal_error(e)
 
 @app.get("/api/data-health")
 def data_health(user: str = Depends(get_current_user)):
@@ -991,7 +1028,7 @@ def data_health(user: str = Depends(get_current_user)):
         alerts = mgr.get_health_alerts(NSE_TICKERS)
         return {"alerts": alerts, "count": len(alerts)}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _internal_error(e)
 
 @app.get("/api/data-sources")
 def data_sources(user: str = Depends(get_current_user)):
@@ -1007,52 +1044,71 @@ def data_sources(user: str = Depends(get_current_user)):
             "fundamentals_count": meta.get("fundamentals_ticker_count", 0),
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _internal_error(e)
 
 
 # ── Manual single-field entry (existing feature) ──────────────────────────
 
+def _known_ticker(raw: str) -> str:
+    ticker = raw.upper().split(".")[0].strip()
+    if ticker not in _NSE_SYMBOLS:
+        raise HTTPException(status_code=400, detail=f"Unknown ticker '{raw}'")
+    return ticker
+
+
 @app.post("/api/missing-data")
 def save_missing_data(req: MissingDataRequest, user: str = Depends(get_current_user)):
+    ticker = _known_ticker(req.ticker)
     try:
-        ticker = req.ticker.upper()
         try:
             val = float(req.value)
         except ValueError:
             val = req.value
-        loader.save_missing_field(ticker, req.field_name, val, req.source)
+        try:
+            loader.save_missing_field(ticker, req.field_name, val, req.source)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
         prices       = loader.get_price_data(ticker)
         fundamentals = loader.get_fundamentals(ticker)
         scores       = scorer.compute_scores(prices, fundamentals)
         _score_cache[ticker] = scores
         return {"success": True, "new_scores": _clean_dict(scores)}
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _internal_error(e)
 
 @app.post("/api/manual-price")
 def manual_price(req: ManualPriceRequest, user: str = Depends(get_current_user)):
     """Set a single ticker's price manually."""
+    ticker = _known_ticker(req.ticker)
+    if not math.isfinite(req.price) or req.price <= 0:
+        raise HTTPException(status_code=400, detail="Price must be a positive number")
+    date_iso = _parse_date(req.date) if req.date else datetime.now().strftime("%Y-%m-%d")
+    if not date_iso:
+        raise HTTPException(status_code=400, detail=f"Unrecognised date '{req.date}'")
     try:
-        from io import BytesIO
-        import csv
-        ticker = req.ticker.upper().split(".")[0]
-        date   = req.date or datetime.now().strftime("%Y-%m-%d")
-        csv_str = f"ticker,date,open,high,low,close,volume\n{ticker},{date},{req.price},{req.price},{req.price},{req.price},0\n"
-        mgr = get_manager()
-        result = mgr.upload_prices(csv_str.encode())
-        return {"success": True, "ticker": ticker, "price": req.price}
+        csv_str = f"ticker,date,price\n{ticker},{date_iso},{req.price}\n"
+        result = get_manager().upload_prices(csv_str.encode())
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _internal_error(e)
+    if not result["success"]:
+        raise HTTPException(status_code=400, detail="; ".join(result.get("errors") or result.get("warnings") or ["Price rejected"]))
+    return {"success": True, "ticker": ticker, "price": req.price}
 
 @app.post("/api/manual-fundamental")
 def manual_fundamental(req: ManualFundamentalRequest, user: str = Depends(get_current_user)):
     """Set a single fundamental field for a ticker."""
+    ticker = _known_ticker(req.ticker)
+    if not math.isfinite(req.value):
+        raise HTTPException(status_code=400, detail="Value must be a finite number")
     try:
-        ticker = req.ticker.upper().split(".")[0]
         loader.save_missing_field(ticker, req.field, req.value, "manual_entry")
-        return {"success": True, "ticker": ticker, "field": req.field, "value": req.value}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _internal_error(e)
+    return {"success": True, "ticker": ticker, "field": req.field, "value": req.value}
 
 
 # ── Portfolio ──────────────────────────────────────────────────────────────
@@ -1168,7 +1224,7 @@ def get_portfolio(user: str = Depends(get_current_user)):
     try:
         return _enrich(portfolio.get_summary(loader))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _internal_error(e)
 
 
 # ── Layers 1-4: Global / Country / Sector / Industry Intelligence ───────
@@ -1192,7 +1248,7 @@ def get_global_layer(user: str = Depends(get_current_user)):
         _layer1234_cache["global_ts"] = now
         return result
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _internal_error(e)
 
 
 @app.get("/api/intelligence/country")
@@ -1212,7 +1268,7 @@ def get_country_layer(countries: str = None, user: str = Depends(get_current_use
         _layer1234_cache["country_ts"] = now
         return result
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _internal_error(e)
 
 
 @app.get("/api/intelligence/sector")
@@ -1228,7 +1284,7 @@ def get_sector_layer(user: str = Depends(get_current_user)):
         _layer1234_cache["sector_ts"] = now
         return result
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _internal_error(e)
 
 
 @app.get("/api/portfolio/risk")
@@ -1264,7 +1320,7 @@ def get_portfolio_risk(user: str = Depends(get_current_user)):
         )
         return risk
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _internal_error(e)
 
 
 @app.post("/api/recommendations/log")
@@ -1290,7 +1346,7 @@ def log_recommendation_endpoint(ticker: str, user: str = Depends(get_current_use
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _internal_error(e)
 
 
 @app.post("/api/recommendations/{recommendation_id}/outcome")
@@ -1304,7 +1360,7 @@ def record_recommendation_outcome(recommendation_id: str, current_price: float, 
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _internal_error(e)
 
 
 @app.get("/api/recommendations/history")
@@ -1313,7 +1369,7 @@ def get_recommendations_history(ticker: str = None, user: str = Depends(get_curr
     try:
         return {"history": get_recommendation_history(ticker)}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _internal_error(e)
 
 
 @app.get("/api/recommendations/accuracy")
@@ -1324,7 +1380,7 @@ def get_recommendations_accuracy(user: str = Depends(get_current_user)):
     try:
         return get_accuracy_stats()
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _internal_error(e)
 
 
 @app.get("/api/recommendations/effectiveness")
@@ -1339,7 +1395,7 @@ def get_recommendations_effectiveness(user: str = Depends(get_current_user)):
     try:
         return get_component_effectiveness()
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _internal_error(e)
 
 
 @app.post("/api/trades")
@@ -1357,7 +1413,7 @@ def add_trade(trade: TradeRequest, user: str = Depends(get_current_user)):
         )
         return _enrich(portfolio.get_summary(loader))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _internal_error(e)
 
 
 @app.delete("/api/trades/{trade_id}")
@@ -1371,7 +1427,7 @@ def delete_trade(trade_id: str, user: str = Depends(get_current_user)):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _internal_error(e)
 
 
 @app.delete("/api/trades/ticker/{ticker}")
@@ -1379,18 +1435,18 @@ def delete_all_trades_for_ticker(ticker: str, user: str = Depends(get_current_us
     """Clear every trade for a ticker in one action - for when an
     entire position was entered wrong and needs a clean restart."""
     try:
-        result = portfolio.delete_all_trades_for_ticker(ticker)
+        portfolio.delete_all_trades_for_ticker(ticker)
         return _enrich(portfolio.get_summary(loader))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _internal_error(e)
 
 
 @app.get("/api/analytics")
 def get_analytics(user: str = Depends(get_current_user)):
     try:
-        return analytics.get_analytics(portfolio, loader, scorer, NSE_TICKERS)
+        return analytics.get_analytics(portfolio, loader, scorer)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _internal_error(e)
 
 
 # ── Watchlist ──────────────────────────────────────────────────────────────
@@ -1495,9 +1551,9 @@ if __name__ == "__main__":
         print("=" * 50)
         print(f"  Stock Intel v{APP_VERSION}")
         print("=" * 50)
-        print(f"  Starting up... your browser will open automatically.")
+        print("  Starting up... your browser will open automatically.")
         print(f"  If it doesn't, go to: http://localhost:{port}")
-        print(f"  Close this window to stop the app.")
+        print("  Close this window to stop the app.")
         print("=" * 50)
         _open_browser_when_ready(port)
         uvicorn.run(app, host="0.0.0.0", port=port, reload=False, log_level="warning")

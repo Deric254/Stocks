@@ -1,6 +1,6 @@
 """
-csv_data_manager.py — Manual CSV upload data layer.
-No scraping. No APIs. You feed the data.
+csv_data_manager.py — the data layer: your CSV uploads plus the "Update Data" refresh.
+Uploaded / researched data is authoritative; live sources only fill gaps and re-price ratios.
 
 Two separate upload flows:
   1. PRICES  — upload weekly, system warns if >7 days old
@@ -27,14 +27,16 @@ import csv
 import io
 import json
 import math
+import re
 import threading
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
 import pandas as pd
 
 from services.paths import DATA_DIR
+from services.nse_scraper import last_trading_day, market_clock
 
 PRICES_CSV       = DATA_DIR / "prices_manual.csv"
 FUNDAMENTALS_CSV = DATA_DIR / "fundamentals_manual.csv"
@@ -260,6 +262,63 @@ def _derive_fundamentals_row(fund: dict) -> tuple:
     return fund, derived
 
 
+_DATE_FORMATS = ("%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y", "%d-%m-%Y", "%Y/%m/%d", "%d.%m.%Y",
+                 "%d-%b-%Y", "%d %b %Y", "%b %d, %Y", "%d/%m/%y")
+
+
+def _parse_date(text: str) -> Optional[str]:
+    """ISO date string, or None when the text is not a recognised date.
+    (The previous loop overwrote the value with today's date after the first
+    failed format, so every non-ISO date silently became today.)"""
+    text = str(text).strip()
+    for fmt in _DATE_FORMATS:
+        try:
+            return datetime.strptime(text, fmt).strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+    return None
+
+
+def _price_of(entry) -> Optional[float]:
+    """Current price of a stored price entry. Entries come from CSV uploads
+    ("close") and from live snapshots ("price"); readers must accept both."""
+    if not entry:
+        return None
+    for key in ("close", "price"):
+        v = _safe_float(entry.get(key))
+        if v is not None and v > 0:
+            return v
+    return None
+
+
+def audit_fundamentals_row(row: dict, price: Optional[float]) -> list:
+    """Internal-consistency problems in one stock's fundamentals (empty list = clean).
+    Pure arithmetic on values already present - nothing is looked up or guessed."""
+    issues = []
+    eps, pe = _safe_float(row.get("eps")), _safe_float(row.get("pe"))
+    div, dy = _safe_float(row.get("dividends")), _safe_float(row.get("dividend_yield"))
+    if pe and pe > 0 and eps is not None and eps <= 0:
+        issues.append("P/E is set but EPS is not positive")
+    if row.get("check"):
+        issues.append(str(row["check"]))      # set by _reprice_all; stays until new data replaces the row
+    elif price and eps and eps > 0 and pe and pe > 0:
+        implied = price / eps
+        if abs(pe - implied) / implied > 0.15:
+            issues.append(f"P/E {pe:g} disagrees with price ÷ EPS ({implied:.1f})")
+    if dy is not None and 0.25 < dy <= _FRACTION_FIELDS["dividend_yield"]:
+        issues.append(f"dividend yield {dy:.0%} is unusually high — check for a one-off special dividend")
+    if eps and eps > 0 and div and div > 1.5 * eps:
+        issues.append(f"dividend {div:g} is over 150% of EPS {eps:g}")
+    for field, ceiling in _FRACTION_FIELDS.items():
+        v = _safe_float(row.get(field))
+        if v is not None and v > ceiling:
+            issues.append(f"{field} {v:g} looks like a percentage, expected a fraction")
+    lu = _parse_date(str(row.get("last_update") or ""))
+    if lu and lu > date.today().isoformat():
+        issues.append(f"last_update {lu} is in the future")
+    return issues
+
+
 def _parse_history(val) -> list:
     if not val or str(val).strip() in ("", "nan", "none"):
         return []
@@ -284,20 +343,16 @@ def _normalise_row(row: dict, alias_map: dict) -> dict:
 # ── Template generation ───────────────────────────────────────────────────────
 
 def generate_price_template(tickers: list) -> str:
-    """
-    Price template pre-filled from live scraper.
-    - Scraper hit first (kenyanstocks.com bulk)
-    - Manual stubs fill any gaps
-    - Cells the scraper couldn't find left EMPTY so they show red in Excel/Sheets
-    """
-    # Import here to avoid circular imports at module load
+    """Price template. A cell is pre-filled ONLY with a price fetched today from
+    a live source; everything else is left empty for you to fill (stale or
+    placeholder numbers must never look like current prices)."""
     live_prices = {}
     try:
         from services.nse_scraper import get_all_prices
-        live_prices = get_all_prices()   # cached 4h — fast on repeat calls
-        print(f"[template/prices] scraper returned {len(live_prices)} prices")
+        live_prices = get_all_prices()
     except Exception as e:
         print(f"[template/prices] scraper unavailable: {e}")
+    today = datetime.now().strftime("%Y-%m-%d")
 
     out = io.StringIO()
     w = csv.DictWriter(out, fieldnames=PRICE_FIELDS)
@@ -305,94 +360,39 @@ def generate_price_template(tickers: list) -> str:
     for t in tickers:
         base = t["ticker"].split(".")[0].upper()
         entry = live_prices.get(base, {})
-        price = entry.get("price")
-        # Leave empty if scraper couldn't find it — user fills in the red cell
+        price = entry.get("price") if _price_is_fresh_today(entry, today) else None
         w.writerow({"ticker": base, "price": price if price else ""})
     return out.getvalue()
 
 
-def generate_fundamentals_template(tickers: list, seed: dict) -> str:
-    """
-    Fundamentals template pre-filled from scraper then seed.
-    Priority: scraper (live afx.kwayisi.org) > seed (annual reports) > empty (red cell).
-    Empty cells = scraper AND seed both missing — user fills those in.
-    """
-    live_funds = {}
-    try:
-        from services.nse_scraper import get_fundamentals as scraper_get_fund
-        from concurrent.futures import ThreadPoolExecutor
-
-        def _fetch(ticker_base):
-            try:
-                return ticker_base, scraper_get_fund(ticker_base)
-            except Exception:
-                return ticker_base, {}
-
-        bases = [t["ticker"].split(".")[0].upper() for t in tickers]
-        with ThreadPoolExecutor(max_workers=6) as ex:
-            for base, data in ex.map(_fetch, bases):
-                if data:
-                    live_funds[base] = data
-        print(f"[template/fundamentals] scraper returned {len(live_funds)} stocks")
-    except Exception as e:
-        print(f"[template/fundamentals] scraper unavailable: {e}")
+def generate_fundamentals_template(tickers: list, seed: dict, uploaded: Optional[dict] = None) -> str:
+    """Fundamentals template, pre-filled from data already on file:
+    your uploaded data first, the seed JSON only for tickers with no upload at
+    all (mixing the two would reintroduce placeholder numbers next to real ones).
+    No network calls - the download is instant even when every live source is down."""
+    uploaded = uploaded if uploaded is not None else get_manager().get_all_fundamentals()
 
     def fmt_history(arr):
         return ";".join(str(v) for v in arr) if arr else ""
 
-    def pick(live, uploaded, sd, field, default=""):
-        """Priority: live scraper (freshest) > your uploaded real data
-        (authoritative once you've provided it) > old seed JSON (last
-        resort only, may be stale/placeholder) > default/empty (red
-        cell). `sd` is passed in as {} by the caller whenever this
-        ticker already has any real uploaded data - see the loop
-        below for why that matters."""
-        for source in (live, uploaded, sd):
-            v = source.get(field)
-            if v is not None and v != "" and v != []:
-                return v
-        return default
-
     rows = []
-    today = datetime.now().strftime("%Y-%m-%d")
-    manager = get_manager()
     for t in tickers:
         base = t["ticker"].split(".")[0].upper()
-        lv = live_funds.get(base, {})
-        up = manager._fundamentals.get(base, {})
-        # If this ticker already has ANY real uploaded data, seed is
-        # excluded entirely for it - not just for individually-empty
-        # fields. Otherwise a downloaded template could show old fake
-        # seed numbers (e.g. a fabricated net_income_history) sitting
-        # next to real EPS/PE data, and a careless re-upload of that
-        # template would silently reintroduce exactly the fake-data
-        # contamination bug already found and fixed in
-        # get_fundamentals() and upload_fundamentals() - just via a
-        # different door.
-        sd = seed.get(base, {}) if not up else {}
+        src = uploaded.get(base) or seed.get(base, {})
+
+        def v(field, default=""):
+            x = src.get(field)
+            return default if x is None or x == "" or x == [] else x
 
         rows.append({
-            "ticker":             base,
-            "eps":                pick(lv, up, sd, "eps"),
-            "bvps":               pick(lv, up, sd, "bvps"),
-            "pe":                 pick(lv, up, sd, "pe"),
-            "pb":                 pick(lv, up, sd, "pb"),
-            "roe":                pick(lv, up, sd, "roe"),
-            "margin":             pick(lv, up, sd, "margin"),
-            "dividends":          pick(lv, up, sd, "dividends"),
-            "dividend_yield":     pick(lv, up, sd, "dividend_yield"),
-            "market_cap":         pick(lv, up, sd, "market_cap"),
-            "total_assets":       pick(lv, up, sd, "total_assets"),
-            "debt_to_equity":     pick(lv, up, sd, "debt_to_equity"),
-            "interest_coverage":  pick(lv, up, sd, "interest_coverage"),
-            "revenue":            pick(lv, up, sd, "revenue"),
-            "net_income":         pick(lv, up, sd, "net_income"),
-            "revenue_history":    fmt_history(pick(lv, up, sd, "revenue_history", [])),
-            "net_income_history": fmt_history(pick(lv, up, sd, "net_income_history", [])),
-            "dps_history":        fmt_history(pick(lv, up, sd, "dps_history", [])),
-            "data_source":        pick(lv, up, sd, "data_source", ""),
-            "fiscal_year":        pick(lv, up, sd, "fiscal_year", "2024"),
-            "last_update":        pick(lv, up, sd, "last_update", today),
+            "ticker": base,
+            **{f: v(f) for f in ("eps", "bvps", "pe", "pb", "roe", "margin", "dividends",
+                                 "dividend_yield", "market_cap", "total_assets",
+                                 "debt_to_equity", "interest_coverage", "revenue", "net_income")},
+            **{f: fmt_history(v(f, [])) for f in ("revenue_history", "net_income_history", "dps_history")},
+            "data_source": v("data_source"),
+            "fiscal_year": v("fiscal_year", ""),
+            "last_update": v("last_update"),   # blank stays blank: the parser dates it on upload
         })
 
     out = io.StringIO()
@@ -437,19 +437,24 @@ def parse_price_csv(content: bytes) -> tuple:
                     warnings.append(f"{ticker} row {row_num}: price missing or zero — skipped")
                     continue
 
-                date_val = row.get("date") or row.get("last_update") or today
-                for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y", "%d-%m-%Y"):
-                    try:
-                        date_val = datetime.strptime(date_val, fmt).strftime("%Y-%m-%d")
-                        break
-                    except Exception:
-                        date_val = today
+                raw_date = (row.get("date") or row.get("last_update") or "").strip()
+                if raw_date and raw_date.lower() not in ("nan", "none"):
+                    date_val = _parse_date(raw_date)
+                    if date_val is None:
+                        warnings.append(f"{ticker} row {row_num}: unrecognised date '{raw_date}' — skipped")
+                        continue
+                    if date_val > (date.today() + timedelta(days=1)).isoformat():
+                        warnings.append(f"{ticker} row {row_num}: date {date_val} is in the future — skipped")
+                        continue
+                else:
+                    date_val = today
 
                 vol = int(_safe_float(row.get("volume", "0")) or 0)
                 valid.append({
                     "ticker": ticker,
                     "date":   date_val,
                     "open":   price, "high": price, "low": price, "close": price,
+                    "price":  price,
                     "volume": vol,
                 })
             except Exception as e:
@@ -464,6 +469,12 @@ def parse_price_csv(content: bytes) -> tuple:
             "Ensure CSV has 'ticker' and 'price' (or 'close') columns."
         )
     return valid, errors, warnings
+
+
+# Fraction fields (0.2 = 20%) and the largest value that is still believable as a fraction.
+# Above it the number can only be a percentage typed as a fraction (a yield or margin over 100%
+# is impossible; ROE over 150% does not occur on the NSE).
+_FRACTION_FIELDS = {"dividend_yield": 1.0, "margin": 1.0, "roe": 1.5}
 
 
 def parse_fundamentals_csv(content: bytes) -> tuple:
@@ -493,16 +504,12 @@ def parse_fundamentals_csv(content: bytes) -> tuple:
                     warnings.append(f"Row {row_num}: no ticker — skipped")
                     continue
 
-                last_update = row.get("last_update", "").strip()
-                if not last_update or last_update.lower() in ("nan", "none", ""):
-                    last_update = datetime.now().strftime("%Y-%m-%d")
-                else:
-                    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y", "%d-%m-%Y"):
-                        try:
-                            last_update = datetime.strptime(last_update, fmt).strftime("%Y-%m-%d")
-                            break
-                        except Exception:
-                            continue
+                raw_update = row.get("last_update", "").strip()
+                last_update = _parse_date(raw_update) if raw_update.lower() not in ("", "nan", "none") else None
+                if raw_update and raw_update.lower() not in ("nan", "none") and last_update is None:
+                    warnings.append(f"{ticker} row {row_num}: unrecognised last_update '{raw_update}' — "
+                                    "using today (the upload date)")
+                last_update = last_update or datetime.now().strftime("%Y-%m-%d")
 
                 fund = {
                     "ticker":             ticker,
@@ -524,11 +531,18 @@ def parse_fundamentals_csv(content: bytes) -> tuple:
                     "net_income_history": _parse_history(row.get("net_income_history")),
                     "dps_history":        _parse_history(row.get("dps_history")),
                     "data_source":        row.get("data_source", "manual_csv") or "manual_csv",
-                    "fiscal_year":        row.get("fiscal_year", "2024") or "2024",
+                    "fiscal_year":        row.get("fiscal_year", "") or "",
                     "last_update":        last_update,
                     "data_stale":         False,
                     "fetch_ok":           True,
                 }
+
+                for field, ceiling in _FRACTION_FIELDS.items():
+                    v = fund.get(field)
+                    if v is not None and v > ceiling:
+                        warnings.append(f"{ticker}: {field} {v:g} looks like a percentage — "
+                                        f"stored as {v / 100:g} (these fields are fractions, 0.2 = 20%)")
+                        fund[field] = v / 100
 
                 has_any = any(
                     fund.get(f) is not None
@@ -556,6 +570,59 @@ def parse_fundamentals_csv(content: bytes) -> tuple:
 
 
 # ── Storage ───────────────────────────────────────────────────────────────────
+
+_PASTE_LINE = re.compile(r"\s*([A-Za-z&]{2,7})[\s,;:=]+(?:KSh|KES)?\s?(\d[\d,]*(?:\.\d+)?)\s*")
+_PASTE_KSH = re.compile(r"KSh\s?(\d[\d,]*(?:\.\d+)?)")
+
+
+def parse_pasted_prices(text: str, known: set) -> tuple:
+    """Prices from text the user copied out of a website. Two shapes are understood:
+      A) one stock per line:   SCOM 36.40   /   SCOM,36.40   /   SCOM<tab>36.40
+      B) a table copied whole: each known ticker, then the FIRST 'KSh<price>' after it
+         (the ticker may be glued to the company name, e.g. 'Safaricom PlcSCOM').
+    Only tickers in `known` count and only 'KSh' prices in shape B, so index levels, market
+    caps and page chrome cannot be picked up by accident. A ticker seen with two different
+    prices is a conflict and is dropped, never guessed.
+    Returns ({ticker: price}, [conflicting tickers])."""
+    seen: dict = {}
+
+    def put(raw_ticker, raw_price):
+        t = raw_ticker.upper()
+        t = {"HFCB": "HFCK"}.get(t, t)
+        if t not in known:
+            return
+        try:
+            price = float(raw_price.replace(",", ""))
+        except ValueError:
+            return
+        if 0.1 < price < 100000:
+            seen.setdefault(t, []).append(price)
+
+    for line in text.splitlines():
+        m = _PASTE_LINE.fullmatch(line)
+        if m:
+            put(m.group(1), m.group(2))
+
+    flat = re.sub(r"\s+", " ", text)
+    names = sorted(known | {"HFCB"}, key=len, reverse=True)
+    alt = "|".join(map(re.escape, names))
+    # a ticker stands alone, OR is glued to an upper-case name ("...ETFGLD") but then must be
+    # followed directly by its KSh price
+    marks = list(re.finditer(rf"(?<![A-Z&])({alt})(?![A-Z&])|({alt})(?= ?KSh\d)", flat))
+    for i, m in enumerate(marks):
+        end = marks[i + 1].start() if i + 1 < len(marks) else len(flat)
+        pm = _PASTE_KSH.search(flat[m.end():end][:150])
+        if pm:
+            put(m.group(1) or m.group(2), pm.group(1))
+
+    prices, conflicts = {}, []
+    for t, vals in seen.items():
+        if max(vals) - min(vals) > 0.005 * min(vals):
+            conflicts.append(t)
+        else:
+            prices[t] = vals[0]
+    return prices, sorted(conflicts)
+
 
 class CSVDataManager:
     """
@@ -662,6 +729,7 @@ class CSVDataManager:
         updated = []
 
         with _mem_lock:
+            old_prices = dict(self._prices)
             for r in rows:
                 t = r["ticker"]
                 existing_date = str(self._prices.get(t, {}).get("date", "2000-01-01"))
@@ -682,6 +750,7 @@ class CSVDataManager:
             meta_snap    = dict(self._meta)
 
         self._persist_prices(prices_snap, history_snap, meta_snap)
+        self._reprice_all(old_prices)
 
         return {
             "success":     True,
@@ -730,6 +799,7 @@ class CSVDataManager:
             meta_snap = dict(self._meta)
 
         self._persist_fundamentals(fund_snap, meta_snap)
+        self._reprice_all()
 
         return {
             "success":     True,
@@ -747,14 +817,49 @@ class CSVDataManager:
         with _mem_lock:
             return dict(self._prices.get(base, {}))
 
+    def import_pasted_prices(self, text: str, known: set, confirm: bool = False,
+                             accept_suspect: bool = False) -> dict:
+        """Two steps so nothing is saved blind: confirm=False returns a preview (price, last
+        recorded close, % change, ok/suspect per stock); confirm=True saves exactly what the
+        preview showed. 'suspect' = a move NSE's daily limit cannot explain (likely a
+        mis-paste); those are saved only with accept_suspect=True."""
+        prices, conflicts = parse_pasted_prices(text, known)
+        trade_date = last_trading_day()
+        rows = []
+        for t in sorted(prices):
+            price = prices[t]
+            with _mem_lock:
+                hist = [r for r in self._price_history.get(t, []) if _safe_float(r.get("close"))]
+            prev = max(hist, key=lambda r: str(r["date"])) if hist else None
+            status, change = "ok", None
+            if prev:
+                prev_close = _safe_float(prev["close"])
+                change = round((price / prev_close - 1) * 100, 2)
+                gap = (trade_date - date.fromisoformat(str(prev["date"])[:10])).days
+                if not self._plausible(price, prev_close, gap):
+                    status = "suspect"
+            rows.append({"ticker": t, "price": price, "previous": prev and _safe_float(prev["close"]),
+                         "previous_date": prev and str(prev["date"])[:10], "change_pct": change, "status": status})
+        out = {"date": trade_date.isoformat(), "rows": rows, "conflicts": conflicts, "saved": False}
+        if not confirm:
+            return out
+        to_save = [r for r in rows if r["status"] == "ok" or accept_suspect]
+        if not to_save:
+            out["error"] = "Nothing to save - no recognised prices (or all were held back as suspect)."
+            return out
+        csv_text = "ticker,date,price\n" + "".join(f"{r['ticker']},{out['date']},{r['price']}\n" for r in to_save)
+        res = self.upload_prices(csv_text.encode())
+        out.update(saved=bool(res.get("success")), saved_count=len(to_save), upload=res)
+        return out
+
     def get_price_history_df(self, ticker: str, days: int = 365) -> pd.DataFrame:
         base = ticker.split(".")[0].upper()
         with _mem_lock:
             rows = list(self._price_history.get(base, []))
             if not rows:
                 p = self._prices.get(base, {})
-                if p and p.get("close"):
-                    rows = [dict(p)]
+                if _price_of(p):
+                    rows = [{**p, "close": _price_of(p)}]
 
         if not rows:
             return pd.DataFrame()
@@ -812,13 +917,21 @@ class CSVDataManager:
 
     # ── STATUS AND ALERTS ─────────────────────────────────────────────────────
 
+    def get_all_fundamentals(self) -> dict:
+        """Copy of every stored fundamentals row (public alternative to touching _fundamentals)."""
+        with _mem_lock:
+            return {t: dict(f) for t, f in self._fundamentals.items()}
+
     def get_upload_meta(self) -> dict:
         with _mem_lock:
             return dict(self._meta)
 
     def get_prices_age_days(self) -> float:
-        ts = self.get_upload_meta().get("prices_last_upload")
-        return _age_days(ts) if ts else 9999.0
+        """Age of the newest price write - a manual upload OR a live snapshot
+        (previously only uploads counted, so a successful update still showed "Outdated")."""
+        meta = self.get_upload_meta()
+        ages = [_age_days(meta[k]) for k in ("prices_last_upload", "last_auto_snapshot") if meta.get(k)]
+        return min(ages) if ages else 9999.0
 
     def get_fundamentals_age_days(self) -> float:
         ts = self.get_upload_meta().get("fundamentals_last_upload")
@@ -847,8 +960,19 @@ class CSVDataManager:
             prices_snap = dict(self._prices)
             funds_snap  = dict(self._fundamentals)
 
+        by_issue: dict = {}
+        for t in tickers:
+            base = t["ticker"].split(".")[0].upper()
+            if base in funds_snap:
+                for issue in audit_fundamentals_row(funds_snap[base], _price_of(prices_snap.get(base))):
+                    by_issue.setdefault(re.sub(r"[\d.,%]+", "#", issue), []).append(f"{base}: {issue}")
+        for _kind, items in sorted(by_issue.items(), key=lambda kv: -len(kv[1]))[:5]:
+            shown = "; ".join(items[:3]) + (f" … (+{len(items) - 3} more)" if len(items) > 3 else "")
+            alerts.append({"ticker": f"{len(items)} stocks", "field": "DATA CHECK", "severity": "warning",
+                           "message": shown, "action": "Verify these figures, then correct via Data Status"})
+
         missing_prices = [t["ticker"].split(".")[0].upper() for t in tickers
-                          if not prices_snap.get(t["ticker"].split(".")[0].upper(), {}).get("close")]
+                          if not _price_of(prices_snap.get(t["ticker"].split(".")[0].upper()))]
         if missing_prices:
             alerts.append({"ticker": f"{len(missing_prices)} stocks", "field": "PRICE",
                            "severity": "warning", "message": f"{len(missing_prices)} stocks have no price data",
@@ -863,7 +987,7 @@ class CSVDataManager:
                            "action": "Upload fundamentals CSV in Data Status"})
         return alerts
 
-    def get_freshness_report(self, tickers: list, seed: dict = None) -> list:
+    def get_freshness_report(self, tickers: list, seed: dict = None, overrides: dict = None) -> list:
         result = []
         CRITICAL_FIELDS = ["pe", "eps", "roe", "bvps", "dividend_yield"]
 
@@ -876,11 +1000,13 @@ class CSVDataManager:
             p             = prices_snap.get(base, {})
             fund_uploaded = funds_snap.get(base, {})
             fund_seed     = (seed or {}).get(base, {})
-            eff_fund      = dict(fund_seed)
-            eff_fund.update({k: v for k, v in fund_uploaded.items()
-                             if v is not None and v != "" and v != []})
+            # Same precedence as get_fundamentals(): once a ticker has uploaded
+            # data, seed values never fill gaps (the old report said "has EPS"
+            # from seed while scoring saw None). Manual single-field entries win.
+            eff_fund = dict(fund_uploaded if fund_uploaded else fund_seed)
+            eff_fund.update((overrides or {}).get(base, {}))
 
-            price_val   = _safe_float(p.get("close", 0)) or 0
+            price_val   = _price_of(p) or 0
             price_date  = str(p.get("date", ""))
             uploaded_at = str(p.get("uploaded_at", ""))
             date_to_check = price_date or uploaded_at
@@ -937,127 +1063,181 @@ class CSVDataManager:
 
     # ── DAILY PRICE SNAPSHOT (auto-accumulates real history over time) ──────
 
-    def snapshot_daily_prices(self, live_prices: dict) -> dict:
+    @staticmethod
+    def _plausible(price: float, prev_close: float, gap_days: int) -> bool:
+        """NSE limits a stock to about +/-10% a day. A move far beyond what the elapsed
+        trading days allow is more likely a bad scrape (or an unapplied split/bonus) than
+        a real price - it is held back and reported instead of being written to history.
+        Not applied after a long gap (nothing reliable to compare with)."""
+        if prev_close <= 0 or gap_days > 30:
+            return True
+        trading_days = max(1, -(-gap_days * 5 // 7))
+        return abs(price / prev_close - 1) <= min(0.60, 0.10 * trading_days + 0.05)
+
+    def snapshot_daily_prices(self, live_prices: dict, provisional: bool = False) -> dict:
         """
-        Appends today's REAL scraped current price into price history for
-        every ticker the scraper found — one row per ticker per calendar
-        day. This is the only way NSE historical price data can exist for
-        free, since no free provider publishes it: it has to be captured
-        day by day, going forward, from the one thing that IS free (the
-        current live price).
+        Records the real live price into price history: one row per ticker per
+        trading day. This is how NSE history accumulates for free - no free
+        provider publishes it, so it is captured day by day.
 
-        ACID properties, deliberately:
-          Atomicity  — either this whole snapshot's rows land in the
-                       in-memory dict AND the resulting file write
-                       completes, or (on any exception) nothing is
-                       persisted; _write_csv_atomic uses a temp-file +
-                       rename so a crash mid-write can never leave a
-                       half-written history file on disk.
-          Consistency — idempotent per (ticker, date): calling this
-                       twice in the same day (e.g. a redeploy, a retry)
-                       never creates a duplicate row. Only rows with a
-                       real positive price are written — a scraper
-                       hiccup returning 0/None for a ticker silently
-                       skips that ticker rather than polluting history
-                       with a bad data point.
-          Isolation  — the ENTIRE mutate-snapshot-persist sequence is
-                       serialized end-to-end via a dedicated write lock
-                       (not just the in-memory mutation) — two
-                       near-simultaneous callers cannot race each
-                       other's disk write and silently lose a row.
-                       This was a real bug caught by a concurrency
-                       test, not a hypothetical: without this lock,
-                       the slower of two concurrent callers could
-                       persist a stale snapshot that clobbers the
-                       faster one's newer data.
-          Durability — same _write_csv_atomic used everywhere else:
-                       temp file written and fsynced by the OS, then
-                       atomically renamed over the real file.
-
-        Returns a small report so the caller (startup, or a scheduled
-        job) can log what actually happened without guessing.
+        Guarantees (each covered by tests):
+          Atomicity   - rows land in memory and on disk together; files are
+                        written temp-file + rename, never half-written.
+          Consistency - only real positive prices fetched TODAY are written (stubs /
+                        old cache are skipped). The row is dated with the trade date
+                        of the Nairobi market session (a weekend run records Friday,
+                        a pre-market run records yesterday's close as yesterday) or the
+                        quote's own date when the source states one. An implausible
+                        jump versus the last close is held back (skipped_suspect).
+                        One row per (ticker, day): the first FINAL price wins.
+          Provisional - during market hours the price is not the close yet. With
+                        provisional=True the row is marked auto_snapshot_live and is
+                        replaced by the next snapshot of that day (the final one then
+                        locks it). Manually uploaded rows are never replaced.
+          Isolation   - mutate+persist is serialised end to end.
+          Durability  - atomic rename over the real file.
         """
-        today = datetime.now().date().isoformat()
-        added, skipped_no_price, skipped_duplicate, skipped_stale = [], [], [], []
+        today = datetime.now().date().isoformat()          # freshness check
+        trade_date = last_trading_day().isoformat()
+        added, updated = [], []
+        skipped_no_price, skipped_duplicate, skipped_stale, skipped_suspect = [], [], [], []
+        source_tag = "auto_snapshot_live" if provisional else "auto_snapshot"
 
-        # Serializes the WHOLE mutate+persist sequence against other
-        # concurrent calls to this function — see docstring above.
         with _snapshot_write_lock:
             with _mem_lock:
+                old_prices = dict(self._prices)
                 for base_ticker, entry in live_prices.items():
                     price = _safe_float(entry.get("price"))
                     if price is None or price <= 0:
                         skipped_no_price.append(base_ticker)
                         continue
-
-                    # ACCURACY GUARD: placeholder / old cached prices must never
-                    # be stamped as today's close (see _price_is_fresh_today).
                     if not _price_is_fresh_today(entry, today, require_ts=False):
                         skipped_stale.append(base_ticker)
                         continue
 
-                    existing_dates = {str(row.get("date", "")) for row in self._price_history.get(base_ticker, [])}
-                    if today in existing_dates:
+                    row_date = str(entry.get("price_date") or trade_date)[:10]
+                    if row_date > trade_date:
+                        row_date = trade_date
+                    history = self._price_history.setdefault(base_ticker, [])
+                    existing = next((r for r in history if str(r.get("date", "")) == row_date), None)
+                    if existing is not None and existing.get("source") != "auto_snapshot_live":
                         skipped_duplicate.append(base_ticker)
                         continue
 
-                    row = {
-                        "ticker": base_ticker,
-                        "date": today,
-                        "open": price, "high": price, "low": price, "close": price,
-                        "volume": entry.get("volume", 0) or 0,
-                        "uploaded_at": datetime.now().isoformat(),
-                        "source": "auto_snapshot",
-                    }
-                    self._price_history.setdefault(base_ticker, []).append(row)
-                    added.append(base_ticker)
+                    earlier = [r for r in history if str(r.get("date", "")) < row_date
+                               and _safe_float(r.get("close"))]
+                    if earlier:
+                        prev = max(earlier, key=lambda r: str(r["date"]))
+                        gap = (date.fromisoformat(row_date) - date.fromisoformat(str(prev["date"])[:10])).days
+                        if not self._plausible(price, _safe_float(prev["close"]), gap):
+                            skipped_suspect.append(f"{base_ticker} ({prev['close']} -> {price})")
+                            continue
 
-                    # Keep the "current price" table in sync too, but only
-                    # advance it — never let an older/equal snapshot regress
-                    # a more recent manual upload (same rule upload_prices uses).
-                    existing_date = str(self._prices.get(base_ticker, {}).get("date", "2000-01-01"))
-                    if today >= existing_date:
-                        self._prices[base_ticker] = {
-                            "ticker": base_ticker, "price": price, "date": today,
-                            "uploaded_at": datetime.now().isoformat(), "source": "auto_snapshot",
-                        }
+                    now_iso = datetime.now().isoformat()
+                    fields = {"open": price, "high": price, "low": price, "close": price, "price": price,
+                              "volume": entry.get("volume", 0) or 0, "uploaded_at": now_iso, "source": source_tag}
+                    if existing is not None:
+                        existing.update(fields)
+                        row = existing
+                        updated.append(base_ticker)
+                    else:
+                        row = {"ticker": base_ticker, "date": row_date, **fields}
+                        history.append(row)
+                        added.append(base_ticker)
 
-                if added:
+                    # Keep the "current price" table in sync, but only ever advance it.
+                    if row_date >= str(self._prices.get(base_ticker, {}).get("date", "2000-01-01")):
+                        self._prices[base_ticker] = dict(row)
+
+                changed = added or updated
+                if changed:
                     self._meta.update({
                         "last_auto_snapshot": datetime.now().isoformat(),
-                        "last_auto_snapshot_count": len(added),
-                        # Keep this in sync with reality — /api/system-status
-                        # and other consumers read prices_ticker_count as
-                        # "how many tickers have a real current price," and
-                        # that must be true after an auto-snapshot too, not
-                        # only after a manual CSV upload (which is the only
-                        # path that used to set it — a real gap found by
-                        # actually running the built executable end to end).
+                        "last_auto_snapshot_count": len(changed),
                         "prices_ticker_count": len(self._prices),
                     })
-
                 prices_snap  = dict(self._prices)
                 history_snap = {t: list(v) for t, v in self._price_history.items()}
                 meta_snap    = dict(self._meta)
 
-            # Disk write happens outside _mem_lock (readers aren't
-            # blocked by slow disk I/O) but still inside
-            # _snapshot_write_lock, so it can't race another concurrent
-            # call to this same function.
-            if added:
+            if changed:
                 self._persist_prices(prices_snap, history_snap, meta_snap)
 
+        if changed:
+            self._reprice_all(old_prices)
+
         return {
-            "date": today,
+            "date": trade_date,
+            "provisional": provisional,
             "added": added,
+            "updated": updated,
             "skipped_no_price": skipped_no_price,
             "skipped_duplicate": skipped_duplicate,
             "skipped_stale": skipped_stale,
-            "total_added": len(added),
+            "skipped_suspect": skipped_suspect,
+            "total_added": len(added) + len(updated),
         }
+
+    def final_snapshot_done(self, trade_date: str) -> bool:
+        return self.get_upload_meta().get("last_final_snapshot_date") == trade_date
+
+    def mark_final_snapshot(self, trade_date: str):
+        with _mem_lock:
+            self._meta["last_final_snapshot_date"] = trade_date
+            meta_snap = dict(self._meta)
+        with _disk_lock:
+            _wj_atomic(META_JSON, meta_snap)
 
     # Price-driven ratios: recomputed from the fresh price and the SAME stored
     # EPS / dividend, so they always agree with the researched numbers.
+    @staticmethod
+    def _source_with(existing: str, notes: list) -> str:
+        """data_source trail: keeps the original source and one-off notes (e.g. 'live ... filled: eps'),
+        replaces any earlier 'repriced ...' note so the string cannot grow with every price change."""
+        parts = [p.strip() for p in (existing or "").split(" || ")
+                 if p.strip() and not p.strip().startswith("repriced ")]
+        parts += [n for n in notes if n not in parts]
+        return " || ".join(parts)
+
+    def _reprice_all(self, old_prices: Optional[dict] = None) -> int:
+        """P/E, dividend yield and P/B always reflect the CURRENT price. Called after every
+        price or fundamentals write (CSV, paste, manual, live snapshot), so ratios can never
+        be left at an old price. Uses only EPS / DPS / BVPS already stored; returns the number
+        of stocks changed. last_update is untouched - re-pricing does not make EPS newer.
+
+        Quarantine: if a row's stored P/E did not match price ÷ EPS at the price it was written
+        against (old_prices), one of the two is wrong. Re-pricing would overwrite the P/E from a
+        suspect EPS and make the problem invisible, so that row is flagged (row["check"]) and
+        left alone until you verify it and upload corrected data."""
+        today = datetime.now().strftime("%Y-%m-%d")
+        changed_n = 0
+        with _snapshot_write_lock:
+            with _mem_lock:
+                for base, row in self._fundamentals.items():
+                    price = _price_of(self._prices.get(base))
+                    if not price or row.get("check"):
+                        continue
+                    new = dict(row)
+                    old = _price_of((old_prices or {}).get(base))
+                    eps_, pe_ = _safe_float(row.get("eps")), _safe_float(row.get("pe"))
+                    if old and eps_ and eps_ > 0 and pe_ and pe_ > 0 and abs(pe_ - old / eps_) / (old / eps_) > 0.15:
+                        new["check"] = (f"P/E {pe_:g} disagrees with price ÷ EPS ({old / eps_:.1f}) — "
+                                        "verify EPS; ratios are not auto-repriced for this stock")
+                        self._fundamentals[base] = new
+                        changed_n += 1
+                        continue
+                    changed = self._reprice(new, price, today)
+                    if changed:
+                        new["data_source"] = self._source_with(
+                            row.get("data_source"), [f"repriced {today} from current price: {', '.join(changed)}"])
+                        self._fundamentals[base] = new
+                        changed_n += 1
+                if changed_n:
+                    funds_snap, meta_snap = dict(self._fundamentals), dict(self._meta)
+            if changed_n:
+                self._persist_fundamentals(funds_snap, meta_snap)
+        return changed_n
+
     def _reprice(self, row: dict, price, today: str) -> list:
         changed = []
         if not price or price <= 0:
@@ -1080,30 +1260,28 @@ class CSVDataManager:
         return changed
 
     def refresh_all_data(self, tickers: list, progress=None,
-                         deadline_s: float = 180.0, workers: int = 4) -> dict:
+                         deadline_s: float = 120.0, workers: int = 4) -> dict:
         """
         The 'Update Data' button's backend.
 
-        Sources: one live page per stock (afx.kwayisi.org: current price,
-        EPS, P/E, dividend, yield, market cap), plus the kenyanstocks.com
-        bulk table when it is readable.
+        Sources: kenyanstocks.com bulk table (fetched concurrently) and one live
+        page per stock (afx.kwayisi.org, falling back to mystocks for the price).
 
-        Never hangs: short timeouts, parallel fetch, a circuit breaker that
-        stops after repeated failures ("source blocked/unreachable"), and a
-        hard overall deadline. Everything is saved once at the end.
+        Never hangs: short timeouts, parallel fetch, hosts that cannot be reached
+        are skipped after the first failure, a circuit breaker stops after a
+        full round of failures, and a hard overall deadline applies.
 
         Consistency / accuracy rules:
-          - Your uploaded / researched fundamentals are authoritative. Live
-            data only FILLS fields that are empty; it never overwrites them
-            (different sources use different EPS bases - mixing them would
-            make a stock's numbers disagree with each other).
-          - P/E, dividend yield and P/B are recomputed from the fresh price
-            and the stored EPS / dividend / book value, so they stay
-            consistent with the current price.
-          - Only a price fetched today is recorded as today's price.
-          - Existing values are never blanked; derived fields are traceable
-            in data_source.
-          - The report says plainly what each source returned and why.
+          - Uploaded / researched fundamentals are authoritative: live data only
+            FILLS empty fields (sources use different EPS bases - mixing them
+            would make a stock's numbers disagree with each other).
+          - P/E, dividend yield and P/B are recomputed from the fresh price and
+            the stored EPS / dividend / book value.
+          - Only a price fetched today is recorded (see snapshot_daily_prices).
+          - last_update (fundamentals age) moves ONLY when live data filled a
+            field; re-pricing ratios does not make old EPS "fresh".
+          - Existing values are never blanked; data_source keeps the original
+            source plus this run's notes (not an ever-growing history).
         """
         import time
         from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FutTimeout
@@ -1124,22 +1302,18 @@ class CSVDataManager:
         total = len(bases)
 
         report = {
-            "started_at": now_iso,
-            "prices": None,
+            "started_at": now_iso, "prices": None,
             "fundamentals": {"tickers_improved": 0, "fields_derived": 0, "errors": [],
                              "tickers_total": total, "tickers_live_ok": 0, "timed_out": []},
-            "source_status": {},
-            "warnings": [],
+            "source_status": {}, "warnings": [],
         }
 
-        # 1. Bulk price table (fast, one request). May be unreadable.
+        scraper.reset_source_health()
         _progress(0, total, "prices")
-        bulk = {}
-        try:
-            bulk = scraper.get_all_prices() or {}
-        except Exception as e:
-            report["warnings"].append(f"Bulk price fetch failed: {e}")
-        fresh_bulk = {b: e for b, e in bulk.items() if _price_is_fresh_today(e, today)}
+
+        # 1. Bulk price table runs in the background WHILE the per-stock pages load.
+        bulk_pool = ThreadPoolExecutor(max_workers=1)
+        bulk_future = bulk_pool.submit(scraper.get_all_prices)
 
         # 2. One live page per stock, in parallel, with a circuit breaker.
         state = {"fails": 0, "oks": 0, "abort": False}
@@ -1160,10 +1334,8 @@ class CSVDataManager:
                     state["oks"] += 1; state["fails"] = 0
                 else:
                     state["fails"] += 1
-                    # One full round of parallel workers failing in a row with
-                    # not a single success: the source is blocked or down - stop
-                    # instead of waiting for every stock (was 6, i.e. a second
-                    # round of ~11s timeouts before giving up).
+                    # A full round of parallel workers failing with not one
+                    # success: the sources are blocked or down - stop waiting.
                     if state["fails"] >= max(3, workers) and state["oks"] == 0:
                         state["abort"] = True
             return base, data, err
@@ -1195,30 +1367,44 @@ class CSVDataManager:
         finally:
             pool.shutdown(wait=False, cancel_futures=True)
 
+        bulk = {}
+        try:
+            bulk = bulk_future.result(timeout=max(1.0, deadline_s - (time.monotonic() - t0))) or {}
+        except Exception as e:
+            report["warnings"].append(f"Bulk price fetch failed: {type(e).__name__}: {str(e)[:80] or 'timed out'}")
+        finally:
+            bulk_pool.shutdown(wait=False, cancel_futures=True)
+        fresh_bulk = {b: e for b, e in bulk.items() if _price_is_fresh_today(e, today)}
+
         live_ok = sum(1 for d in quotes.values() if d)
         if state["abort"]:
             top = errors.most_common(1)[0][0] if errors else "no response"
             report["warnings"].append(
-                f"afx.kwayisi.org is not reachable from the server ({top}). Stopped after repeated "
-                "failures instead of waiting; existing data was left unchanged.")
+                f"Per-stock sources are not reachable from the server ({top}). Stopped after "
+                "repeated failures instead of waiting; existing data was left unchanged.")
         elif errors:
-            top, n = errors.most_common(1)[0]
+            top, _n = errors.most_common(1)[0]
             report["warnings"].append(f"{sum(errors.values())} stocks could not be fetched (mostly: {top}).")
 
         report["source_status"] = {
+            "mansamarkets.com (bulk prices)": scraper.LAST_STATUS.get("mansamarkets.com", "not checked"),
             "kenyanstocks.com (bulk prices)": scraper.LAST_STATUS.get("kenyanstocks.com", "not checked"),
-            "afx.kwayisi.org (per stock)": f"{live_ok}/{total} stocks read" + (
-                f"; errors: {dict(errors)}" if errors else ""),
+            "afx.kwayisi.org (per stock)": scraper.LAST_STATUS.get("afx.kwayisi.org", "not checked"),
+            "live.mystocks.co.ke (price fallback)": scraper.LAST_STATUS.get("live.mystocks.co.ke", "not used"),
+            "cross-check": scraper.LAST_STATUS.get("cross-check", "not run"),
+            "stocks read": f"{live_ok}/{total}",
         }
 
         # 3. Record today's prices: bulk where fresh, else the live page price.
         prices_today = dict(fresh_bulk)
         for b, d in quotes.items():
             if b not in prices_today and d.get("price"):
-                prices_today[b] = {"price": d["price"], "source": "afx.kwayisi.org",
-                                   "updated_at": now_iso, "volume": 0}
+                prices_today[b] = {"price": d["price"], "source": d.get("source", "live"),
+                                   "updated_at": now_iso, "volume": 0, "price_date": d.get("price_date")}
+        state, trade_date = market_clock()
+        report["market"] = {"state": state, "trade_date": trade_date.isoformat()}
         try:
-            report["prices"] = self.snapshot_daily_prices(prices_today)
+            report["prices"] = self.snapshot_daily_prices(prices_today, provisional=(state == "open"))
         except Exception as e:
             report["prices"] = {"available": False, "reason": str(e), "total_added": 0}
             report["warnings"].append(f"Price save failed: {e}")
@@ -1226,6 +1412,22 @@ class CSVDataManager:
             report["warnings"].append(
                 "No fresh prices were available today - showing last known prices. "
                 "Upload a price CSV if you need today's values.")
+        else:
+            no_price = [b for b in bases if b not in prices_today]
+            if no_price:
+                shown = ", ".join(no_price[:12]) + (f" and {len(no_price) - 12} more" if len(no_price) > 12 else "")
+                report["warnings"].append(
+                    f"{len(no_price)} tracked stocks had no live price from any source and kept their "
+                    f"last known price: {shown}.")
+            suspect = report["prices"].get("skipped_suspect") or []
+            if suspect:
+                report["warnings"].append(
+                    "Held back as implausible jumps (not saved - upload a CSV if the move is real, "
+                    "e.g. after a split): " + "; ".join(suspect[:8]))
+            if state == "open":
+                report["warnings"].append(
+                    "The market is open: these are live prices, recorded as provisional. "
+                    "The official close is saved automatically after 16:00 Nairobi time.")
 
         with _mem_lock:
             current_prices = dict(self._prices)
@@ -1235,6 +1437,14 @@ class CSVDataManager:
         fields_derived_total = 0
         for base in bases:
             live = quotes.get(base) or {}
+            live_price, l_eps, l_pe = live.get("price"), live.get("eps"), live.get("pe")
+            if live_price and l_eps and l_eps > 0 and l_pe and l_pe > 0 \
+                    and abs(live_price / l_eps / l_pe - 1) > 0.15:
+                # The source's own EPS, P/E and price contradict each other (sites mix bases, e.g.
+                # group vs. company EPS). None of its fundamentals can be trusted - use the price only.
+                live = {k: v for k, v in live.items() if k in ("price", "price_date", "source")}
+                report["warnings"].append(f"{base}: the source's EPS, P/E and price contradict each other - "
+                                          "its fundamentals were ignored (price still used).")
             with _mem_lock:
                 existing = dict(self._fundamentals.get(base, {}))
             merged = dict(existing)
@@ -1246,8 +1456,9 @@ class CSVDataManager:
                     merged[k] = v
                     filled.append(k)
 
-            price = _safe_float((current_prices.get(base) or {}).get("price"))
-            repriced = self._reprice(merged, price, today) if (price and (live or fresh_bulk.get(base))) else []
+            price = _price_of(current_prices.get(base))
+            repriced = (self._reprice(merged, price, today)
+                        if (price and not existing.get("check") and (live or fresh_bulk.get(base))) else [])
 
             merged["price"] = price
             derived_row, derived_fields = _derive_fundamentals_row(merged)
@@ -1256,12 +1467,14 @@ class CSVDataManager:
             if filled or repriced or derived_fields:
                 notes = []
                 if filled:
-                    notes.append(f"live {today} (afx.kwayisi.org) filled: {', '.join(filled)}")
+                    notes.append(f"live {today} ({live.get('source', 'live')}) filled: {', '.join(filled)}")
                 if repriced:
                     notes.append(f"repriced {today} from current price: {', '.join(repriced)}")
-                prev = (derived_row.get("data_source") or "").strip()
-                derived_row["data_source"] = " || ".join([x for x in [prev] + notes if x])
-                derived_row["last_update"] = today
+                if derived_fields:
+                    notes.append(f"derived {today}: {', '.join(derived_fields)}")
+                derived_row["data_source"] = self._source_with(existing.get("data_source"), notes)
+                if filled:
+                    derived_row["last_update"] = today
                 derived_row["fetch_ok"] = True
                 derived_row["ticker"] = base
                 with _mem_lock:

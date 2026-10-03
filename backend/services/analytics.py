@@ -5,8 +5,7 @@ analytics.py — Equity curve, monthly performance, best/worst picks,
 
 import math
 import pandas as pd
-import numpy as np
-from datetime import datetime, timedelta
+from datetime import datetime
 from collections import defaultdict
 
 
@@ -18,7 +17,7 @@ class AnalyticsEngine:
         trades_df = pd.DataFrame(portfolio_mgr.get_all_trades())
         return self._build_equity_curve(trades_df, loader)
 
-    def get_analytics(self, portfolio_mgr, loader, scorer, stock_meta_list: list) -> dict:
+    def get_analytics(self, portfolio_mgr, loader, scorer) -> dict:
         """
         Full analytics payload for the /api/analytics endpoint.
         """

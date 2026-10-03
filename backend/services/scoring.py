@@ -18,7 +18,6 @@ Total: 0–60
 """
 
 import math
-import pandas as pd
 
 
 def _safe(val, default=0.0) -> float:

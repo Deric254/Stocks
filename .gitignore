@@ -15,14 +15,8 @@ frontend/dist/
 
 # Data caches (will regenerate — don't commit stale data)
 backend/data/nse_cache/
-backend/data/gold/
-backend/data/fetch_status.json
-
-# Keep these (needed for app to start)
-!backend/data/config.json
-!backend/data/fundamentals.csv
-!backend/data/prices_history.csv
-!backend/data/portfolio_trades.csv
+backend/data/*.tmp
+.pytest_cache/
 
 # OS
 .DS_Store

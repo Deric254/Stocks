@@ -228,3 +228,19 @@ def test_delete_trade_roundtrip(client):
 
     r3 = client.delete("/api/trades/nonexistent-id-12345")
     assert r3.status_code == 404
+
+
+# -- manual entry validation (these must be rejected BEFORE anything is written) --
+
+@pytest.mark.parametrize("path,body", [
+    ("/api/manual-price", {"ticker": "NOPE", "price": 10}),                      # unknown ticker
+    ("/api/manual-price", {"ticker": "SCOM", "price": -5}),                      # not positive
+    ("/api/manual-price", {"ticker": "SCOM", "price": 0}),
+    ("/api/manual-price", {"ticker": "SCOM", "price": 10, "date": "banana"}),    # bad date
+    ("/api/manual-fundamental", {"ticker": "SCOM", "field": "ticker", "value": 1}),       # not an allowed field
+    ("/api/manual-fundamental", {"ticker": "SCOM", "field": "data_source", "value": 1}),
+    ("/api/manual-fundamental", {"ticker": "NOPE", "field": "eps", "value": 1}),
+    ("/api/missing-data", {"ticker": "SCOM", "field_name": "password", "value": "1", "source": "x"}),
+])
+def test_manual_entry_rejects_invalid_input(client, path, body):
+    assert client.post(path, json=body).status_code == 400

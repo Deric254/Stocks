@@ -1,76 +1,40 @@
 """
-nse_scraper.py — REAL live NSE Kenya data with robust tracking.
+nse_scraper.py - live NSE Kenya quotes. Nothing here is guessed or hard-coded.
 
-Price Sources (cascade):
-  1. kenyanstocks.com  — ALL stocks bulk, live prices + volume + change
-  2. afx.kwayisi.org   — per-stock price + fundamentals
-  3. live.mystocks.co.ke — per-stock fallback price
-  4. Manual stub       — last resort, clearly flagged
+Sources
+  1. mansamarkets.com + kenyanstocks.com - bulk tables, every stock in one request.
+     Both are read and cross-checked; a stock they disagree on is dropped, not guessed.
+  2. afx.kwayisi.org    - per-stock page: price + EPS, P/E, dividend, yield, market cap
+  3. live.mystocks.co.ke- per-stock price fallback, used only when (2) gives nothing
 
-Fundamentals Sources:
-  1. afx.kwayisi.org   — PE, EPS, ROE, Book Value, Dividends, Market Cap
-  2. Manual entry      — user-supplied via Data Status page
+A source that fails at connection level (DNS, refused, timeout) is marked
+down for a short time so one dead host never costs a timeout per stock.
+Every failure keeps its reason in LAST_STATUS so the Update report can say why.
 
-Data Health Tracking:
-  - Per-field expiry: each fundamental field tracked individually
-  - Missing fields reported to UI with age and suggested action
-  - Retry logic: failed fetches retried after 1 hour, not 24
-  - Notification system: /api/data-health returns actionable alerts
+Run `python -m services.nse_scraper` to see what each source returns from the
+machine you run it on (useful when a host blocks your server's IP range).
 """
 
-import re
 import json
 import math
+import random
+import re
 import threading
-import requests
-from bs4 import BeautifulSoup
-from datetime import datetime
-from pathlib import Path
+import time
+from datetime import date, datetime, time as time_, timedelta, timezone
 from typing import Optional
 
+import requests
+from bs4 import BeautifulSoup
+
 from services.paths import DATA_DIR
+
 CACHE_DIR = DATA_DIR / "nse_cache"
-CACHE_DIR.mkdir(parents=True, exist_ok=True)
-
-# Tier-3 seed fallback for get_fundamentals() below. This was
-# previously referenced as a bare name (SEED_FUNDAMENTALS) that was
-# never actually defined anywhere in this module - a pre-existing bug
-# that has silently crashed (and been silently swallowed by every
-# prior caller's own exception handling) for as long as this code
-# existed, surfaced for the first time by a new caller that reports
-# per-ticker errors explicitly instead of swallowing them. Loaded from
-# the same JSON file and in the same way as data_loader.py's
-# _load_seed(), so both modules agree on what "seed data" means.
-_SEED_FUNDAMENTALS_CACHE = None
-
-
-def _get_seed_fundamentals() -> dict:
-    global _SEED_FUNDAMENTALS_CACHE
-    if _SEED_FUNDAMENTALS_CACHE is not None:
-        return _SEED_FUNDAMENTALS_CACHE
-    seed_path = DATA_DIR / "nse_fundamentals_seed.json"
-    if seed_path.exists():
-        try:
-            with open(seed_path) as f:
-                raw = json.load(f)
-            _SEED_FUNDAMENTALS_CACHE = {k: v for k, v in raw.items() if not k.startswith("_")}
-            return _SEED_FUNDAMENTALS_CACHE
-        except Exception:
-            pass
-    _SEED_FUNDAMENTALS_CACHE = {}
-    return _SEED_FUNDAMENTALS_CACHE
-
-PRICES_CACHE  = CACHE_DIR / "prices.json"
-FUND_CACHE    = CACHE_DIR / "fundamentals.json"
-HEALTH_CACHE  = CACHE_DIR / "data_health.json"
-
-PRICE_TTL       = 4 * 3600        # re-fetch prices after 4h
-STALE_TTL       = 7 * 24 * 3600   # serve stale prices up to 7 days
-
-# Fields we care about for scoring — tracked individually
-TRACKED_FUND_FIELDS = ["pe", "eps", "bvps", "roe", "dividend_yield", "dividends", "market_cap"]
+PRICES_CACHE = CACHE_DIR / "prices.json"
+PRICE_TTL = 15 * 60           # bulk prices are re-fetched after 15 min (sites refresh ~every 30 min)
 
 _lock = threading.Lock()
+_local = threading.local()    # one requests.Session per thread: keep-alive without sharing state
 
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
@@ -78,86 +42,53 @@ USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:123.0) Gecko/20100101 Firefox/123.0",
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
 ]
-_ua_idx = 0
 
-def _headers():
-    global _ua_idx
-    ua = USER_AGENTS[_ua_idx % len(USER_AGENTS)]
-    _ua_idx += 1
+
+def _headers() -> dict:
     return {
-        "User-Agent": ua,
+        "User-Agent": random.choice(USER_AGENTS),
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9",
-        "Connection": "keep-alive",
-        "Upgrade-Insecure-Requests": "1",
-        "Referer": "https://www.google.com/",
     }
 
-# Real prices from kenyanstocks.com March 2026 — ONLY used if all scraping fails
-MANUAL_PRICE_STUBS = {
-    # Live prices from kenyanstocks.com — March 12, 2026 — last resort fallback
-    "EQTY": 75.50, "KCB": 78.25,  "COOP": 29.90, "ABSA": 30.40,
-    "NCBA": 87.75, "DTK": 157.00, "SCBK": 333.25, "IMH": 49.65,
-    "HFCK": 10.80, "SBIC": 256.75, "BKG": 46.00,
-    "SCOM": 30.25,
-    "EABL": 259.25, "BAT": 541.00, "UNGA": 32.00, "AMAC": 107.50,
-    "CARB": 29.30,  "BOC": 123.50, "FTGH": 2.62,  "SKL": 10.00,
-    "JUB": 390.00,  "BRIT": 12.25, "CIC": 4.96,   "KNRE": 3.82,
-    "LBTY": 10.10,  "SLAM": 10.25,
-    "KEGN": 9.46,  "KPLC": 17.15, "TOTL": 43.40, "UMME": 8.90,
-    "KENOL": 11.00, "KPC": 9.10,
-    "BAMB": 45.00, "PORT": 82.50, "CRWN": 58.00,
-    "SASN": 27.25, "KAPC": 250.00, "LIMT": 511.00, "KUKZ": 424.75,
-    "EGAD": 30.00,
-    "TPSE": 17.00, "NMG": 15.80,  "SGL": 6.42,   "EVRD": 1.23,
-    "XPRS": 7.76,  "SMER": 18.05, "LKL": 2.97,   "NBV": 1.52,
-    "UCHM": 2.11,  "KQ": 5.58,
-    "CGEN": 69.75,
-    "CTUM": 14.25, "HAFR": 1.73,  "OCH": 7.68,   "NSE": 21.05,
-}
 
-# ── Cache helpers ──────────────────────────────────────────────────────────
+def _session() -> requests.Session:
+    s = getattr(_local, "session", None)
+    if s is None:
+        s = _local.session = requests.Session()
+    return s
 
-def _load_cache(path: Path) -> dict:
+
+# -- Cache helpers ----------------------------------------------------------
+
+def _load_cache(path) -> dict:
     with _lock:
-        if path.exists():
-            try:
-                with open(path) as f:
-                    return json.load(f)
-            except Exception:
-                pass
-    return {}
+        try:
+            with open(path) as f:
+                return json.load(f)
+        except (OSError, ValueError):
+            return {}
 
-def _save_cache(path: Path, data: dict):
+
+def _save_cache(path, data: dict):
+    """Atomic write (temp file + rename): a crash never leaves a half-written cache."""
     with _lock:
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
-            with open(path, "w") as f:
+            tmp = path.with_suffix(".tmp")
+            with open(tmp, "w") as f:
                 json.dump(data, f, indent=2, default=str)
-        except Exception as e:
+            tmp.replace(path)
+        except OSError as e:
             print(f"[NSE] Cache save failed {path.name}: {e}")
 
-_rmw_lock = threading.RLock()
-
-def _cache_set(path: Path, key: str, value: dict):
-    """Atomic read-modify-write of ONE key in a JSON cache. Safe when the
-    refresh runs several tickers in parallel - without this, two threads
-    could load the same file, and the later save would silently drop the
-    earlier thread's ticker."""
-    with _rmw_lock:
-        data = _load_cache(path)
-        data[key] = value
-        _save_cache(path, data)
 
 def _age_seconds(ts_str) -> float:
     try:
-        dt = datetime.fromisoformat(str(ts_str))
-        return (datetime.now() - dt).total_seconds()
-    except Exception:
+        return (datetime.now() - datetime.fromisoformat(str(ts_str))).total_seconds()
+    except (TypeError, ValueError):
         return 9e9
 
-def _age_hours(ts_str) -> float:
-    return _age_seconds(ts_str) / 3600
 
 def _safe(v, d=None):
     if v is None:
@@ -166,67 +97,146 @@ def _safe(v, d=None):
         s = str(v).replace(",", "").replace("%", "").replace("KES", "").replace("Kshs", "").strip()
         f = float(s)
         return d if (math.isnan(f) or math.isinf(f)) else f
-    except Exception:
+    except ValueError:
         return d
 
-# Last outcome per source, so the Update report can say WHY a source gave
-# nothing (blocked, timed out, page layout changed) instead of just "no data".
-LAST_STATUS: dict = {}
+
+def last_trading_day(d: Optional[date] = None) -> date:
+    """NSE trades Mon-Fri; on a weekend the latest real close is Friday's.
+    With no argument: the trade date of the current Nairobi market session."""
+    if d is None:
+        return market_clock()[1]
+    while d.weekday() >= 5:
+        d -= timedelta(days=1)
+    return d
+
+
+# -- HTTP with fail-fast source tracking -----------------------------------
+
+LAST_STATUS: dict = {}          # host -> last outcome, shown in the Update report
+_DOWN_FOR_S = 120               # how long a host that cannot be reached is skipped
+_down_until: dict = {}          # host -> monotonic time until which it is skipped
+
+
+def reset_source_health():
+    """Forget which hosts were marked down (called at the start of each Update)."""
+    _down_until.clear()
+
+
+def _describe_error(exc: Exception) -> tuple:
+    """(short human reason, is_connection_level). Looks at the whole error text -
+    requests wraps the real cause deep inside 'Max retries exceeded'."""
+    text = str(exc)
+    low = text.lower()
+    if isinstance(exc, requests.exceptions.ConnectTimeout):
+        return "connection timed out", True
+    if isinstance(exc, requests.exceptions.ReadTimeout):
+        return "server too slow (read timed out)", False
+    if isinstance(exc, requests.exceptions.SSLError):
+        return "TLS/SSL handshake failed", True
+    if any(k in low for k in ("name or service not known", "nameresolution", "getaddrinfo",
+                              "temporary failure in name resolution", "nodename nor servname")):
+        return "DNS lookup failed (host name does not resolve from this server)", True
+    if "refused" in low:
+        return "connection refused", True
+    if isinstance(exc, requests.exceptions.ConnectionError):
+        return "connection failed (" + type(exc).__name__ + ")", True
+    return f"{type(exc).__name__}: {text[:80]}", False
+
 
 def _get_ex(url: str, timeout=(5, 12), attempts: int = 2):
-    """GET with a short connect timeout and one retry. Returns (html, error).
-    Never waits long on a dead/blocked source."""
-    import time as _t
+    """GET -> (html, error). Short timeouts; retries only what a retry can fix
+    (slow reads, 5xx). Connection-level failures mark the host down so the
+    next stocks skip it instantly instead of each waiting for a timeout."""
     host = url.split("/")[2] if "//" in url else url
+    if _down_until.get(host, 0) > time.monotonic():
+        return None, LAST_STATUS.get(host, "source unreachable") + " (skipped)"
+
     err = "unknown error"
     for i in range(attempts):
         try:
-            r = requests.get(url, headers=_headers(), timeout=timeout)
+            r = _session().get(url, headers=_headers(), timeout=timeout)
             if r.status_code == 200:
                 LAST_STATUS[host] = "ok"
                 return r.text, None
             err = f"HTTP {r.status_code}"
-            print(f"[NSE] {err} -> {url}")
-            if r.status_code in (403, 404):      # retrying will not help
+            if r.status_code < 500 and r.status_code != 429:
+                break                     # 403/404/...: retrying will not help
+        except requests.exceptions.RequestException as e:
+            err, connection_level = _describe_error(e)
+            if connection_level:
+                _down_until[host] = time.monotonic() + _DOWN_FOR_S
                 break
-        except requests.exceptions.Timeout:
-            err = "timed out"
-        except Exception as e:
-            err = f"{type(e).__name__}: {str(e)[:80]}"
         if i + 1 < attempts:
-            _t.sleep(1.0)
+            time.sleep(1.0)
     LAST_STATUS[host] = err
     print(f"[NSE] GET failed {url}: {err}")
     return None, err
 
-def _get(url: str, timeout=(5, 12)) -> Optional[str]:
-    html, _ = _get_ex(url, timeout=timeout)
-    return html
+
+# -- Market clock ---------------------------------------------------------------
+EAT = timezone(timedelta(hours=3))
+OPEN_H, CLOSE_H, FINAL_AFTER = time_(9, 0), time_(15, 0), time_(16, 0)
 
 
-# ── Data health tracking ───────────────────────────────────────────────────
+def market_clock(now: Optional[datetime] = None) -> tuple:
+    """(state, trade_date) in Nairobi time. state: 'pre' (before 09:00), 'open'
+    (until 16:00: the close is 15:00 but sites lag up to ~30 min, so prices are not final yet) or 'closed' (final). A price seen
+    before the open is yesterday's close, so its trade_date is the previous
+    trading day; weekends roll back to Friday. (Public holidays are not known.)"""
+    now = (now or datetime.now(EAT)).astimezone(EAT)
+    d, t = now.date(), now.time()
+    if d.weekday() >= 5:
+        return "closed", last_trading_day(d)
+    if t < OPEN_H:
+        return "pre", last_trading_day(d - timedelta(days=1))
+    return ("open" if t < FINAL_AFTER else "closed"), d
 
-def _update_health_many(ticker: str, results: dict, source: str = ""):
-    """Record every field's health for one ticker with ONE disk write
-    (the per-field version rewrote the whole health file 7x per ticker)."""
-    with _rmw_lock:
-        health = _load_cache(HEALTH_CACHE)
-        t = health.setdefault(ticker, {})
-        now = datetime.now().isoformat()
-        for field, (status, value) in results.items():
-            t[field] = {"status": status, "value": value, "source": source, "updated_at": now}
-        _save_cache(HEALTH_CACHE, health)
 
-# ── Source 1: kenyanstocks.com bulk prices ────────────────────────────────
+# -- Bulk price tables (kenyanstocks.com, mansamarkets.com) --------------------
+
+TICKER_ALIASES = {"HFCB": "HFCK"}   # sites use the new HF Group symbol; the app tracks HFCK
+_NOT_TICKERS = {"STOCK", "STOCKS", "KENYA", "COMPANIES", "MARKETS"}
+_MONTHS = {m: i for i, m in enumerate(
+    ("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"), 1)}
+
+
+def _to_number(text) -> Optional[float]:
+    """'KSh1,250.00' -> 1250.0, '−1.35%' -> -1.35 (Unicode minus), '2.41M' -> 2410000.0,
+    '6.27 K' -> 6270.0. Anything else (including '—') -> None."""
+    t = str(text).replace("\u2212", "-").replace("\u2013", "-").replace(",", "").replace("%", "")
+    t = re.sub(r"(?i)kshs?|kes", "", t).replace("+", "").strip()
+    m = re.fullmatch(r"(-?\d+(?:\.\d+)?)\s?([KMBT]?)", t, re.I)
+    if not m:
+        return None
+    return float(m.group(1)) * _MULT.get(m.group(2).upper(), 1.0)
+
+
+def _cell_label(cell) -> str:
+    """Header text of a table cell, falling back to aria-label/title/img alt
+    for headers drawn as icons or buttons."""
+    text = cell.get_text(" ", strip=True)
+    if not text:
+        text = cell.get("aria-label") or cell.get("title") or ""
+        if not text:
+            img = cell.find("img", alt=True)
+            text = img["alt"] if img else ""
+    return text.strip().lower()
+
 
 def _detect_columns(headers: list) -> dict:
-    """Map lower-cased header texts to {"price"|"change"|"volume": index}.
-    First match wins. "change" is tested before "price" so a "Price Change"
-    column is never mistaken for the price, and previous/open/high/low price
-    columns are never taken as the current price."""
-    cols = {}
+    """Map lower-cased header texts to {"price"|"change"|"volume": index}. First match
+    wins. "change" is tested before "price" so a "Price Change" column is never mistaken
+    for the price, and previous/open/high/low price columns are never the current price.
+    When a table has both an absolute "Change" (+0.50) and a percentage "Chg %" (+1.39%),
+    the percentage column is the one returned as "change"."""
+    cols, pct_col = {}, None
     for i, h in enumerate(headers):
-        if "change" in h or "chg" in h or "%" in h:
+        if "%" in h:
+            if pct_col is None:
+                pct_col = i
+            continue
+        if "change" in h or "chg" in h:
             key = "change"
         elif "vol" in h:
             key = "volume"
@@ -235,28 +245,50 @@ def _detect_columns(headers: list) -> dict:
         else:
             continue
         cols.setdefault(key, i)
+    if pct_col is not None:
+        cols["change"] = pct_col
     return cols
 
 
-def _scrape_kenyanstocks_bulk() -> dict:
-    """
-    Scrape kenyanstocks.com/stock - all NSE stocks in one request.
-    The price table is found by its HEADER TEXT (it must have a Price column),
-    not by position on the page, and every column is located from that header.
-    Nothing is guessed: if no table has a Price column the status says so and
-    lists the headers that were seen.
-    """
-    html, err = _get_ex("https://kenyanstocks.com/stock")
-    if not html:
-        print("[NSE] kenyanstocks.com: no response")
-        LAST_STATUS["kenyanstocks.com"] = err or "no response"
-        return {}
+def _row_ticker(row) -> str:
+    """Ticker of a table row: the last path segment of the row's first usable link
+    (/kenya/scom, /stock/nse), else the text of the first cell that is a bare ticker."""
+    for link in row.find_all("a", href=True):
+        seg = link["href"].split("?")[0].rstrip("/").split("/")[-1].upper().strip()
+        if re.fullmatch(r"[A-Z&]{2,7}", seg) and seg not in _NOT_TICKERS:
+            return seg
+    for cell in row.find_all(["td", "th"]):
+        txt = cell.get_text(strip=True).upper()
+        if re.fullmatch(r"[A-Z&]{2,7}", txt) and txt not in _NOT_TICKERS:
+            return txt
+    return ""
 
-    tables = BeautifulSoup(html, "html.parser").find_all("table")
+
+def _page_date(text: str) -> Optional[date]:
+    """The market date a page says it shows ('on Thursday, 1 October 2026',
+    'Updated 1 Oct 2026'), or None when it does not say."""
+    m = re.search(r"(?:on (?:Mon|Tues|Wednes|Thurs|Fri|Satur|Sun)day,|Updated|Last updated)\s+"
+                  r"(\d{1,2}) ([A-Za-z]{3})[a-z]* (\d{4})", text)
+    if not m or m.group(2).lower() not in _MONTHS:
+        return None
+    try:
+        return date(int(m.group(3)), _MONTHS[m.group(2).lower()], int(m.group(1)))
+    except ValueError:
+        return None
+
+
+def _parse_price_table(html: str, source: str) -> dict:
+    """Parse the price table of a bulk page. The table is found by its HEADER TEXT
+    (it needs a Price column), every column is located from that header, and nothing
+    is guessed: if the page cannot be read, LAST_STATUS[source] says exactly why.
+    Rows that did not trade today (no change and no volume) are not 'today's price'
+    and are skipped. A page dated before the latest trading day (a stale cached page)
+    is rejected."""
+    soup = BeautifulSoup(html, "html.parser")
+    tables = soup.find_all("table")
     if not tables:
-        print("[NSE] kenyanstocks.com: no table found")
-        LAST_STATUS["kenyanstocks.com"] = ("page has no price table - the site now builds it with "
-                                           "JavaScript, so a plain request cannot read it")
+        LAST_STATUS[source] = ("page has no price table - the site now builds it with "
+                               "JavaScript, so a plain request cannot read it")
         return {}
 
     table, cols, seen = None, {}, []
@@ -264,77 +296,110 @@ def _scrape_kenyanstocks_bulk() -> dict:
         first = t.find("tr")
         if first is None:
             continue
-        headers = [c.get_text(strip=True).lower() for c in first.find_all(["th", "td"])]
+        headers = [_cell_label(c) for c in first.find_all(["th", "td"])]
         seen.append(headers)
         found = _detect_columns(headers)
         if "price" in found:
             table, cols = t, found
             break
     if table is None:
-        print("[NSE] kenyanstocks.com: no table with a Price column")
-        LAST_STATUS["kenyanstocks.com"] = (f"page loaded but no table has a Price column "
-                                           f"(headers seen: {seen[:3]})")
+        if seen and all(not any(h) for h in seen):
+            LAST_STATUS[source] = ("page has only empty placeholder tables - the real price table is "
+                                   "filled in by JavaScript, which a plain request cannot run")
+        else:
+            LAST_STATUS[source] = f"page loaded but no table has a Price column (headers seen: {seen[:3]})"
+        return {}
+
+    page_day = _page_date(soup.get_text(" ", strip=True))
+    latest = market_clock()[1]
+    if page_day is not None and not latest - timedelta(days=4) <= page_day <= latest:
+        LAST_STATUS[source] = f"page is dated {page_day.isoformat()}, not the latest trading day - ignored"
         return {}
 
     price_col, change_col, volume_col = cols["price"], cols.get("change"), cols.get("volume")
-    results = {}
+    results, untraded = {}, 0
     for row in table.find_all("tr")[1:]:
         cells = row.find_all(["td", "th"])
         if len(cells) <= price_col:
             continue
-
-        # Ticker from the link href (most reliable), else the first cell's text.
-        ticker_raw = ""
-        link = cells[0].find("a")
-        if link:
-            parts = [p for p in link.get("href", "").split("/") if p and p not in ("stock", "nse")]
-            if parts:
-                ticker_raw = parts[-1].upper().strip()
-        if not ticker_raw:
-            ticker_raw = cells[0].get_text(strip=True).upper().strip()
-        if not re.match(r'^[A-Z&]{2,7}$', ticker_raw):
+        ticker = _row_ticker(row)
+        if not ticker:
             continue
-
         texts = [c.get_text(strip=True) for c in cells]
 
-        # Price: handles a K suffix (e.g. 6.27 K for the GLD ETF = 6,270).
-        raw_price = texts[price_col].replace(",", "").replace("KES", "").strip()
-        if raw_price.upper().endswith("K"):
-            p = _safe(raw_price[:-1])
-            raw_price = str(p * 1000) if p else raw_price
-        price = _safe(raw_price)
+        price = _to_number(texts[price_col])
         if not price or not 0.10 < price < 100000:
             continue
-
-        change_pct = None
+        change_pct = volume = None
         if change_col is not None and change_col < len(texts):
-            c = _safe(texts[change_col].replace("+", "").replace("%", "").strip())
-            if c is not None and -50 < c < 50:   # realistic daily change range
+            c = _to_number(texts[change_col])
+            if c is not None and -50 < c < 50:       # realistic daily change range
                 change_pct = c
-
-        volume = None
         if volume_col is not None and volume_col < len(texts):
-            raw_vol = texts[volume_col].upper().replace(" ", "").replace(",", "")
-            raw_vol = re.sub(r"(\d+\.?\d*)K", lambda m: str(float(m.group(1)) * 1000), raw_vol)
-            raw_vol = re.sub(r"(\d+\.?\d*)M", lambda m: str(float(m.group(1)) * 1e6), raw_vol)
-            v = _safe(raw_vol)
+            v = _to_number(texts[volume_col])
             if v and v > 0:
                 volume = int(v)
-
-        results[ticker_raw] = {"price": price, "change_pct": change_pct,
-                               "volume": volume, "source": "kenyanstocks.com"}
+        if (change_col is not None or volume_col is not None) and change_pct is None and volume is None:
+            untraded += 1
+            continue
+        res = {"price": price, "change_pct": change_pct, "volume": volume, "source": source}
+        if page_day is not None:
+            res["price_date"] = page_day.isoformat()
+        results[TICKER_ALIASES.get(ticker, ticker)] = res
 
     if results:
-        LAST_STATUS["kenyanstocks.com"] = f"ok - {len(results)} stocks read"
-        print(f"[NSE] kenyanstocks.com: {len(results)} stocks ✓ (price col={price_col})")
+        extra = f", {untraded} did not trade today" if untraded else ""
+        LAST_STATUS[source] = f"ok - {len(results)} stocks read{extra}"
     else:
-        LAST_STATUS["kenyanstocks.com"] = (f"page loaded and a price table was found, but 0 rows could be "
-                                           f"read (headers: {seen[-1]})")
-        print("[NSE] kenyanstocks.com: 0 stocks parsed - page structure may have changed")
+        LAST_STATUS[source] = (f"page loaded and a price table was found, but 0 rows could be read "
+                               f"(headers: {seen[-1]})")
     return results
 
 
-# ── Source 2: afx.kwayisi.org per-stock ───────────────────────────────────
+def _scrape_bulk(source: str, url: str) -> dict:
+    html, err = _get_ex(url)
+    if not html:
+        LAST_STATUS[source] = err or "no response"
+        return {}
+    return _parse_price_table(html, source)
+
+
+def _scrape_mansa() -> dict:
+    return _scrape_bulk("mansamarkets.com", "https://www.mansamarkets.com/kenya")
+
+
+def _scrape_kenyanstocks_bulk() -> dict:
+    return _scrape_bulk("kenyanstocks.com", "https://kenyanstocks.com/stock")
+
+
+def _bulk_sources() -> list:
+    """(name, scraper) in priority order. Resolved at call time."""
+    return [("mansamarkets.com", _scrape_mansa), ("kenyanstocks.com", _scrape_kenyanstocks_bulk)]
+
+
+DISAGREE_PCT = 5.0   # two sources differing by more than this are not trusted
+
+
+def _combine(per_source: dict) -> tuple:
+    """Merge bulk results from several sources. A price is accepted when only one
+    source has it, or when every source that has it agrees within DISAGREE_PCT.
+    A disagreement drops that ticker for today (never a guess) and is reported."""
+    merged, disputed = {}, []
+    for name, rows in per_source.items():
+        for t, d in rows.items():
+            if t not in merged:
+                merged[t] = {**d, "source": d.get("source", name), "confirmed_by": []}
+                continue
+            first = merged[t]
+            if abs(d["price"] - first["price"]) / first["price"] * 100 > DISAGREE_PCT:
+                disputed.append(f"{t} ({first['source']} {first['price']} vs {name} {d['price']})")
+                first["disputed"] = True
+            else:
+                first["confirmed_by"].append(name)
+    for t in [t for t, d in merged.items() if d.get("disputed")]:
+        del merged[t]
+    return merged, disputed
+
 
 _NUM = r'(-?[\d,]*\.?\d+)\s?([%BMKT]?)(?![A-Za-z])'
 _AFX_LABELS = {
@@ -397,244 +462,134 @@ def _parse_afx_html(html: str) -> dict:
 
 
 def fetch_live_quote(ticker_base: str):
-    """One request -> (data, error). data has price + whatever fundamentals
-    the page shows; error says why it is empty (HTTP 403, timed out,
-    layout changed...)."""
-    url = f"https://afx.kwayisi.org/nse/{ticker_base.lower()}.html"
-    html, err = _get_ex(url)
-    if not html:
-        return {}, err
-    data = _parse_afx_html(html)
-    if not data:
-        return {}, "page loaded but no price/fundamentals found (site layout may have changed)"
-    return data, None
+    """One stock -> (data, error). afx first (price + fundamentals), then the
+    mystocks price fallback. data is {} when nothing usable was found; error says why."""
+    base = ticker_base.lower()
+    html, err = _get_ex(f"https://afx.kwayisi.org/nse/{base}.html")
+    if html:
+        data = _parse_afx_html(html)
+        if data:
+            return data, None
+        err = "page loaded but no price/fundamentals found (site layout may have changed)"
+
+    html2, err2 = _get_ex(f"https://live.mystocks.co.ke/stock={ticker_base.upper()}", timeout=(5, 10), attempts=1)
+    if html2:
+        data = _parse_mystocks_html(html2)
+        if data:
+            return data, None
+        err2 = "no current-day quote on page"
+    return {}, f"afx: {err}; mystocks: {err2}"
 
 
-def _scrape_afx(ticker_base: str) -> dict:
-    """afx.kwayisi.org per-stock quote (kept for existing callers)."""
-    return fetch_live_quote(ticker_base)[0]
+# -- Source 3: live.mystocks.co.ke -----------------------------------------
+
+_MYSTOCKS_QUOTE = re.compile(
+    r'(?:End of day|Delayed|Real[- ]?time)\s*-\s*([A-Z][a-z]{2}) (\d{1,2}), (\d{4})\s+'
+    r'([\d,]+(?:\.\d+)?)\s+[+-]?[\d,.]+\s*\(')
 
 
-# ── Source 3: mystocks.co.ke fallback price ────────────────────────────────
+def _parse_mystocks_html(html: str, today: Optional[date] = None) -> dict:
+    """Read the quote header ("End of day - Aug 05, 2026  25.05  -0.60 (-2.34%)").
+    The quote carries its own date; a quote that is not for the latest trading
+    day is rejected instead of being passed off as today's price."""
+    text = BeautifulSoup(html, "html.parser").get_text(" ", strip=True)
+    m = _MYSTOCKS_QUOTE.search(text)
+    if not m:
+        return {}
+    try:
+        quote_day = datetime.strptime(f"{m.group(1)} {m.group(2)} {m.group(3)}", "%b %d %Y").date()
+    except ValueError:
+        return {}
+    if quote_day != last_trading_day(today):
+        return {}
+    price = _safe(m.group(4))
+    if not price or not 0.1 < price < 100000:
+        return {}
+    return {"price": price, "price_date": quote_day.isoformat(), "source": "live.mystocks.co.ke"}
 
-def _scrape_mystocks_price(ticker_base: str) -> Optional[float]:
-    url = f"https://live.mystocks.co.ke/stock={ticker_base.upper()}"
-    html = _get(url, timeout=10)
-    if not html:
-        return None
-    matches = re.findall(r'(?:KES\s*)?([\d,]+\.?\d*)', html)
-    for m in matches:
-        p = _safe(m)
-        if p and 1 < p < 100000:
-            return p
-    return None
 
+# -- Public interface ------------------------------------------------------
 
-# ── Public interface ───────────────────────────────────────────────────────
-
-def get_all_prices() -> dict:
-    """Bulk fetch all NSE prices from kenyanstocks.com. Cache 4h."""
+def get_all_prices(max_age_s: float = PRICE_TTL) -> dict:
+    """Bulk NSE prices merged from every working bulk source and cross-checked
+    (see _combine). Cached for max_age_s. Returns only real, timestamped scraped
+    prices (possibly old ones from the cache - callers that need today's prices
+    must check updated_at). Never invents a price."""
     cache = _load_cache(PRICES_CACHE)
-    # Fresh when the newest bulk-sourced entry is within the TTL. (Judging by
-    # the first dict entry made freshness depend on insertion order.)
-    newest = min((_age_seconds(e.get("updated_at", "2000-01-01"))
-                  for e in cache.values() if e.get("source") == "kenyanstocks.com"), default=None)
-    if newest is not None and newest < PRICE_TTL:
-        print(f"[NSE] Prices from cache ({len(cache)} stocks)")
+    names = {n for n, _ in _bulk_sources()}
+    newest = min((_age_seconds(e.get("updated_at")) for e in cache.values()
+                  if e.get("source") in names), default=None)
+    if newest is not None and newest < max_age_s:
         return cache
 
-    print("[NSE] Live bulk price fetch from kenyanstocks.com…")
-    now = datetime.now().isoformat()
-    results = _scrape_kenyanstocks_bulk()
-
-    if results:
-        for ticker, d in results.items():
-            cache[ticker] = {
-                "price": d["price"], "change_pct": d.get("change_pct"),
-                "volume": d.get("volume"), "source": "kenyanstocks.com",
-                "updated_at": now, "stale": False,
-            }
+    per_source = {}
+    for name, scrape in _bulk_sources():
+        rows = scrape()
+        if rows:
+            per_source[name] = rows
+    merged, disputed = _combine(per_source)
+    LAST_STATUS["cross-check"] = (
+        "disagreement, dropped for today: " + "; ".join(disputed) if disputed else
+        f"{len(per_source)} bulk source(s) agreed" if len(per_source) > 1 else
+        "only one bulk source available - prices not cross-checked")
+    if merged:
+        now = datetime.now().isoformat()
+        for ticker, d in merged.items():
+            cache[ticker] = {"price": d["price"], "change_pct": d.get("change_pct"),
+                             "volume": d.get("volume"), "source": d["source"],
+                             "confirmed_by": d["confirmed_by"], "price_date": d.get("price_date"),
+                             "updated_at": now, "stale": False}
         _save_cache(PRICES_CACHE, cache)
-        return cache
-
-    # Stubs for anything missing
-    for ticker, stub_price in MANUAL_PRICE_STUBS.items():
-        if ticker not in cache:
-            cache[ticker] = {
-                "price": stub_price, "source": "manual_stub",
-                "updated_at": "manual", "stale": True,
-                "note": "Live fetch failed — reference price from March 2026",
-            }
     return cache
 
 
-def get_price(ticker: str) -> dict:
-    """Single ticker price — cache → bulk → afx → mystocks → stub."""
-    base = ticker.split(".")[0].upper()
-    cache = _load_cache(PRICES_CACHE)
-    entry = cache.get(base)
+def check_sources() -> dict:
+    """Probe every source from THIS machine and say, in plain terms, whether automatic
+    updates will work here. Safe to run any time (read-only, nothing is saved).
+    verdict: 'ready' (>=2 bulk sources readable: prices are cross-checked), 'degraded'
+    (exactly 1 bulk source: works, but unverified by a second source) or 'blocked'
+    (no bulk source readable: use Paste prices / CSV)."""
+    reset_source_health()
+    sources = []
+    for name, scrape in _bulk_sources():
+        t0 = time.monotonic()
+        rows = scrape()
+        sample = {k: rows[k]["price"] for k in ("SCOM", "EQTY", "KCB") if k in rows}
+        sources.append({"source": name, "kind": "bulk", "ok": len(rows) >= 30, "rows": len(rows),
+                        "detail": LAST_STATUS.get(name, "no response"), "sample": sample,
+                        "seconds": round(time.monotonic() - t0, 1)})
+    for name, url, parse in (
+            ("afx.kwayisi.org", "https://afx.kwayisi.org/nse/scom.html", _parse_afx_html),
+            ("live.mystocks.co.ke", "https://live.mystocks.co.ke/stock=SCOM", _parse_mystocks_html)):
+        t0 = time.monotonic()
+        html, err = _get_ex(url, attempts=1)
+        parsed = parse(html) if html else {}
+        detail = (f"reachable, read SCOM price {parsed['price']}" if parsed.get("price") else
+                  "reachable but nothing readable (site layout changed, or quote is not current)" if html else
+                  str(err))
+        sources.append({"source": name, "kind": "per-stock fallback", "ok": bool(parsed.get("price")),
+                        "rows": 1 if parsed else 0, "detail": detail,
+                        "sample": {"SCOM": parsed["price"]} if parsed.get("price") else {},
+                        "seconds": round(time.monotonic() - t0, 1)})
+    good_bulk = sum(1 for x in sources if x["kind"] == "bulk" and x["ok"])
+    verdict = "ready" if good_bulk >= 2 else "degraded" if good_bulk == 1 else "blocked"
+    advice = {
+        "ready": "Automatic updates will work and prices are cross-checked by two sources.",
+        "degraded": "Automatic updates will work, but from one bulk source only (no cross-check). "
+                    "Look over the numbers, or confirm with Paste prices.",
+        "blocked": "This server cannot read any bulk price source. Automatic updates will not bring in "
+                   "prices - use Paste prices (or a CSV) from your own browser."}[verdict]
+    return {"verdict": verdict, "advice": advice, "market": dict(zip(("state", "trade_date"),
+            (market_clock()[0], market_clock()[1].isoformat()))), "sources": sources}
 
-    if entry and _age_seconds(entry.get("updated_at", "2000-01-01")) < PRICE_TTL:
-        return {**entry, "stale": False}
 
-    all_p = get_all_prices()
-    if base in all_p and all_p[base].get("source") != "manual_stub":
-        return {**all_p[base], "stale": False}
-
-    afx = _scrape_afx(base)
-    if afx.get("price"):
-        now = datetime.now().isoformat()
-        result = {"price": afx["price"], "source": "afx.kwayisi.org", "updated_at": now, "stale": False}
-        cache[base] = result
-        _save_cache(PRICES_CACHE, cache)
-        return result
-
-    msp = _scrape_mystocks_price(base)
-    if msp:
-        now = datetime.now().isoformat()
-        result = {"price": msp, "source": "mystocks.co.ke", "updated_at": now, "stale": False}
-        cache[base] = result
-        _save_cache(PRICES_CACHE, cache)
-        return result
-
-    if entry and _age_seconds(entry.get("updated_at", "2000-01-01")) < STALE_TTL:
-        return {**entry, "stale": True}
-
-    stub_price = MANUAL_PRICE_STUBS.get(base, 0)
-    return {
-        "price": stub_price, "source": "manual_stub", "stale": True,
-        "updated_at": "manual",
-        "note": "All live sources failed — reference price only.",
-    }
+def diagnose() -> None:
+    """Command-line version of check_sources()."""
+    r = check_sources()
+    for x in r["sources"]:
+        print(f"{x['source']:20}: {'OK ' if x['ok'] else 'FAIL'} {x['detail']} ({x['seconds']}s)")
+    print(f"\nVERDICT: {r['verdict'].upper()} - {r['advice']}")
 
 
-def get_fundamentals(ticker: str, allow_price_fetch: bool = True) -> dict:
-    """
-    Get fundamentals using 3-tier approach:
-      1. SEED (primary) — pre-seeded from NSE annual reports FY2024. Always available.
-      2. CACHE — previously scraped live data, if fresher than seed.
-      3. LIVE SCRAPE — afx.kwayisi.org, used to refresh seed data quarterly.
-
-    For long-term investment decisions, seed data is accurate and sufficient.
-    Live scraping enriches data when available but never blocks scoring.
-    """
-    base = ticker.split(".")[0].upper()
-
-    # --- Tier 1: Check live scrape cache ---
-    cache = _load_cache(FUND_CACHE)
-    cached = cache.get(base)
-
-    # Serve live cache if fresh (< 24h) and successful
-    if cached:
-        age_h = _age_hours(cached.get("last_update", "2000-01-01"))
-        if cached.get("fetch_ok") and age_h < 24:
-            return cached
-
-    # --- Tier 2: Attempt live scrape (if cache is stale or missing) ---
-    # Respect 1h retry cooldown to avoid hammering on failures
-    should_scrape = True
-    if cached and not cached.get("fetch_ok"):
-        age_h = _age_hours(cached.get("last_update", "2000-01-01"))
-        if age_h < 1:
-            should_scrape = False  # Failed recently — wait before retrying
-
-    if should_scrape:
-        print(f"[NSE] Attempting live fundamentals fetch for {base}…")
-        afx = _scrape_afx(base)
-        if allow_price_fetch:
-            price_data = get_price(ticker)
-        else:
-            # Bulk refresh path: NEVER trigger another network price fetch
-            # per ticker (that re-hit slow sites 55 times). Use whatever the
-            # single bulk fetch already cached.
-            price_data = _load_cache(PRICES_CACHE).get(base, {})
-        price = price_data.get("price", 0) or 0
-
-        if afx and (afx.get("price") or any(afx.get(f) is not None for f in ["pe", "eps", "roe", "bvps"])):
-            pe   = afx.get("pe")
-            eps  = afx.get("eps")
-            bvps = afx.get("bvps")
-            pb = round(price / bvps, 2) if (price and bvps and bvps > 0) else None
-            if not pe and eps and eps > 0 and price:
-                pe = round(price / eps, 2)
-            div_yield = afx.get("dividend_yield")
-            dividends = afx.get("dividends")
-            if not div_yield and dividends and price and price > 0:
-                div_yield = round(dividends / price, 4)
-
-            result = {
-                "ticker": base, "eps": eps, "bvps": bvps, "pe": pe, "pb": pb,
-                "roe": afx.get("roe"), "margin": None, "revenue": None,
-                "debt": None, "dividends": dividends, "dividend_yield": div_yield,
-                "market_cap": afx.get("market_cap"), "total_assets": None,
-                "debt_to_equity": None, "interest_coverage": None,
-                "net_income": None, "total_dividends": None,
-                "revenue_history":    afx.get("revenue_history", []),
-                "net_income_history": afx.get("net_income_history", []),
-                "dps_history":        afx.get("dps_history", []),
-                "last_update":  datetime.now().isoformat(),
-                "data_source":  "afx.kwayisi.org",
-                "data_stale":   False,
-                "fetch_ok":     True,
-            }
-            _update_health_many(base, {f: ("ok" if result.get(f) is not None else "missing", result.get(f))
-                                       for f in TRACKED_FUND_FIELDS}, "afx.kwayisi.org")
-            _cache_set(FUND_CACHE, base, result)
-            print(f"[NSE] {base}: live fundamentals fetched ✓")
-            return result
-        else:
-            # Live scrape failed — record attempt time
-            print(f"[NSE] {base}: live scrape returned no data — using seed")
-            if cached:
-                cached["last_update"] = datetime.now().isoformat()
-                cached["fetch_ok"] = False
-                cached["data_source"] = "none"
-                _cache_set(FUND_CACHE, base, cached)
-            _update_health_many(base, {f: ("failed", None) for f in TRACKED_FUND_FIELDS}, "afx.kwayisi.org")
-
-    # --- Tier 3: Seed fundamentals (always available) ---
-    seed = _get_seed_fundamentals().get(base)
-    if seed:
-        result = {
-            "ticker":           base,
-            "eps":              seed.get("eps"),
-            "bvps":             seed.get("bvps"),
-            "pe":               seed.get("pe"),
-            "pb":               seed.get("pb"),
-            "roe":              seed.get("roe"),
-            "margin":           seed.get("margin"),
-            "revenue":          seed.get("revenue"),
-            "net_income":       seed.get("net_income"),
-            "debt":             None,
-            "dividends":        seed.get("dividends"),
-            "dividend_yield":   seed.get("dividend_yield"),
-            "market_cap":       seed.get("market_cap"),
-            "total_assets":     seed.get("total_assets"),
-            "debt_to_equity":   seed.get("debt_to_equity"),
-            "interest_coverage":None,
-            "total_dividends":  None,
-            "revenue_history":    seed.get("revenue_history", []),
-            "net_income_history": seed.get("net_income_history", []),
-            "dps_history":        seed.get("dps_history", []),
-            "last_update":   seed.get("last_update", "2026-03-12"),
-            "data_source":   "seed_fy2024",
-            "data_stale":    False,
-            "fetch_ok":      True,
-        }
-        # Track health
-        _update_health_many(base, {f: ("ok" if result.get(f) is not None else "missing", result.get(f))
-                                   for f in TRACKED_FUND_FIELDS}, "seed_fy2024")
-        return result
-
-    # --- Absolute fallback: empty record ---
-    print(f"[NSE] WARNING: {base} has no seed fundamentals and no live data")
-    return {
-        "ticker": base, "eps": None, "bvps": None, "revenue": None, "debt": None,
-        "dividends": None, "roe": None, "margin": None, "pe": None, "pb": None,
-        "dividend_yield": None, "market_cap": None, "total_assets": None,
-        "debt_to_equity": None, "interest_coverage": None, "net_income": None,
-        "total_dividends": None, "net_income_history": [], "revenue_history": [],
-        "dps_history": [], "last_update": "never",
-        "data_source": "none", "data_stale": True, "fetch_ok": False,
-    }
-
+if __name__ == "__main__":
+    diagnose()

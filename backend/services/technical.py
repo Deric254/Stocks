@@ -150,7 +150,7 @@ def _atr(df: pd.DataFrame, period: int = 14):
 def _adx(df: pd.DataFrame, period: int = 14):
     if len(df) < period * 2:
         return None
-    high, low, close = df["high"], df["low"], df["close"]
+    high, low = df["high"], df["low"]
     up_move = high.diff()
     down_move = -low.diff()
 

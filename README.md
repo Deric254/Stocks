@@ -64,7 +64,8 @@ Open: **http://localhost:5173**
 
 ### ⚠️ Important Notes for Hosted Version
 - **First load takes 30-60 seconds** — Render free tier sleeps after 15 min inactivity. It wakes up when someone visits.
-- **Prices may show as stubs** — NSE scraping works best locally. On hosted version, use the **Data Status** page to manually enter current prices.
+- **Update Data says a source is unreachable / blocked** — some NSE data sites block cloud-host IP ranges. Open **Data Status → Test live sources** (or run `python -m services.nse_scraper` locally) to see exactly what each source returns from the server. When live sources fail, nothing is changed or invented: use the **Data Status** page to upload a price CSV.
+- **Uploads disappear after a redeploy (Render)** — Render's default disk is ephemeral, so uploaded data and price history are lost on every restart. Attach a persistent disk and set `STOCKINTEL_DATA_DIR` to its mount path (for example `/var/data`).
 
 ### 🛠️ Troubleshooting
 

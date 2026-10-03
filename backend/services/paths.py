@@ -19,11 +19,20 @@ source tree otherwise. Every module that needs DATA_DIR should import
 it from here instead of redefining it.
 """
 
+import os
 import sys
 from pathlib import Path
 
 
 def get_data_dir() -> Path:
+    # STOCKINTEL_DATA_DIR lets a host point the data at a persistent volume
+    # (e.g. a Render disk). Without it, hosts with an ephemeral filesystem
+    # lose every upload and price snapshot on each redeploy/restart.
+    override = os.environ.get("STOCKINTEL_DATA_DIR", "").strip()
+    if override:
+        data_dir = Path(override)
+        data_dir.mkdir(parents=True, exist_ok=True)
+        return data_dir
     if getattr(sys, "frozen", False):
         # sys.executable is the real, persistent .exe/binary on disk —
         # NOT the ephemeral PyInstaller extraction temp dir. Data next
@@ -39,3 +48,10 @@ def get_data_dir() -> Path:
 
 
 DATA_DIR = get_data_dir()
+
+
+def seed_path() -> Path:
+    """Seed fundamentals file: the one in DATA_DIR if present, else the copy that ships
+    with the code (so a fresh, empty persistent volume still has seed data)."""
+    p = DATA_DIR / "nse_fundamentals_seed.json"
+    return p if p.exists() else Path(__file__).parent.parent / "data" / "nse_fundamentals_seed.json"
